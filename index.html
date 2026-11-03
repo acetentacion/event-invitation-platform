@@ -44,7 +44,7 @@
           <h1>Make room for<br>the <em>good stuff.</em></h1>
           <p class="hero__lede">The invitation, the guest list, the “what time again?” messages. Bring it all together, so you can be there for the moments that matter.</p>
           <div class="hero__actions">
-            <a class="button button--dark" href="#demo">Take a peek inside <span aria-hidden="true">↗</span></a>
+            <a class="button button--dark" href="#demo">Start the guided demo <span aria-hidden="true">↗</span></a>
             <a class="text-link" href="#how-it-works">See how it works <span aria-hidden="true">↓</span></a>
           </div>
           <div class="hero__note"><span class="avatar-stack" aria-hidden="true"><i>M</i><i>A</i><i>J</i></span><span>Made for gatherings big and small</span></div>
@@ -90,7 +90,19 @@
       <section class="demo-section" id="demo">
         <div class="section-wrap">
           <div class="section-kicker">02 / HAVE A LOOK AROUND</div>
-          <div class="demo-heading"><h2>Your event, all <em>together.</em></h2><p>A local-only preview of the place where the plans come together. Search, manage sample guests, and preview or share the guest invitation.</p></div>
+          <div class="demo-heading"><h2>Your event, all <em>together.</em></h2><p>A self-guided preview of the host dashboard and guest invitation. Follow the three steps below to try a guest RSVP and see it appear here.</p></div>
+          <div class="demo-guide" aria-labelledby="demo-guide-title">
+            <div class="demo-guide__intro">
+              <span class="section-kicker">YOUR 1-MINUTE WALKTHROUGH</span>
+              <h3 id="demo-guide-title">Try it as a guest, then come back as the host.</h3>
+            </div>
+            <ol class="demo-guide__steps">
+              <li><span class="demo-guide__number">01</span><span><b>Preview the invite</b><small>Open the guest view, or use Share invite to copy its demo link.</small></span><a class="text-link" href="#invite">Open invite <span aria-hidden="true">↗</span></a></li>
+              <li><span class="demo-guide__number">02</span><span><b>Try an RSVP</b><small>Enter any name and reply; it stays in this browser.</small></span><span class="demo-guide__hint">No account needed</span></li>
+              <li><span class="demo-guide__number">03</span><span><b>See it as the host</b><small>Use “Return to host dashboard” to find your reply in the guest list.</small></span><span class="demo-guide__hint">Back to this view</span></li>
+            </ol>
+            <p class="demo-guide__privacy"><b>Private demo data:</b> Guest and RSVP details are saved in this browser's localStorage only. They are never sent or shared. Share invite only shares the static demo URL—not guest data or a real invitation.</p>
+          </div>
           <div class="dashboard">
             <aside class="dashboard__sidebar">
               <a class="dashboard__brand" href="#main"><span class="brand__mark">g</span> gatherly</a>
@@ -113,7 +125,7 @@
                 <div class="stat-card"><span>CAN'T MAKE IT</span><b id="declined-count">3</b><small>sent with love</small></div>
               </div>
               <div class="guest-panel">
-                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Fictional guest data, stored in this browser only.</p></div><button class="button button--dark button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button></div>
+                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Fictional guest data, stored in this browser only.</p></div><div class="guest-panel__actions"><button class="button button--outline button--reset" id="reset-demo-button" type="button">Reset demo data</button><button class="button button--dark button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button></div></div>
                 <div class="guest-toolbar"><div class="filter-tabs" role="group" aria-label="Filter guests">
                   <button class="filter-tab filter-tab--active" type="button" data-filter="all" aria-pressed="true">Everyone <span id="filter-all-count">38</span></button>
                   <button class="filter-tab" type="button" data-filter="attending" aria-pressed="false">Attending</button>
@@ -125,7 +137,7 @@
               </div>
             </div>
           </div>
-          <p class="demo-disclaimer">Demo only. Guest edits and RSVP replies are stored in this browser to make the walkthrough interactive. They are not sent to a host or synced across devices.</p>
+          <p class="demo-disclaimer">Fictional demo only. Guest edits and RSVP replies are stored in this browser's localStorage only; they are never sent or shared with anyone, and are not synced across devices. Use <b>Reset demo data</b> to restore the original sample guest list and clear this browser's demo RSVP.</p>
         </div>
       </section>
 
@@ -156,10 +168,10 @@
                 <button class="button button--dark rsvp-submit" type="submit">Send my reply <span aria-hidden="true">↗</span></button>
               </form>
               <div class="rsvp-confirmation" id="rsvp-confirmation" role="status" aria-live="polite" hidden>
-                <span class="rsvp-confirmation__icon" aria-hidden="true">✓</span><h3 id="rsvp-confirmation-title" tabindex="-1">Thank you for replying!</h3><p id="rsvp-confirmation-copy"></p><button class="text-link" id="edit-rsvp" type="button">Update your reply</button>
+                <span class="rsvp-confirmation__icon" aria-hidden="true">✓</span><h3 id="rsvp-confirmation-title" tabindex="-1">Thank you for replying!</h3><p id="rsvp-confirmation-copy"></p><div class="rsvp-confirmation__actions"><button class="text-link" id="edit-rsvp" type="button">Update your reply</button><a class="button button--dark" href="#demo">Return to host dashboard <span aria-hidden="true">↗</span></a></div>
               </div>
             </div>
-            <p class="guest-invitation__demo-note">This is a fictional event invitation prototype. Your RSVP is saved only in this browser; it is not sent to a host.</p>
+            <p class="guest-invitation__demo-note">Fictional event invitation prototype. Your RSVP is saved in this browser's localStorage only; it is never sent or shared with a host. Sharing this demo link does not send an invitation.</p>
           </article>
           <a class="guest-invitation__back" href="#demo">← Back to the host demo</a>
         </div>

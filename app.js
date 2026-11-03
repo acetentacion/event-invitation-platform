@@ -45,17 +45,23 @@
     { name: 'Isla Bell', group: 'Family', party: 2, status: 'attending', color: 'IB' }
   ];
 
+  function freshDefaultGuests() {
+    return defaultGuests.map(function (guest) {
+      return Object.assign({}, guest);
+    });
+  }
+
   function loadGuests() {
     try {
       var saved = window.localStorage.getItem(STORAGE_KEY);
       if (!saved) {
-        return defaultGuests.slice();
+        return freshDefaultGuests();
       }
       var parsed = JSON.parse(saved);
-      return Array.isArray(parsed) && parsed.length ? parsed : defaultGuests.slice();
+      return Array.isArray(parsed) && parsed.length ? parsed : freshDefaultGuests();
     } catch (error) {
       storageUnavailable = true;
-      return defaultGuests.slice();
+      return freshDefaultGuests();
     }
   }
 
@@ -221,6 +227,34 @@
     render();
   });
 
+  document.getElementById('reset-demo-button').addEventListener('click', function () {
+    var confirmed = window.confirm(
+      'Reset this browser’s Gatherly demo? This restores the fictional starter guest list and clears the saved demo RSVP.'
+    );
+    if (!confirmed) return;
+
+    guests = freshDefaultGuests();
+    activeFilter = 'all';
+    visibleLimit = 5;
+    searchInput.value = '';
+    var resetSaved = true;
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch (error) {
+      resetSaved = false;
+    }
+    try {
+      window.localStorage.removeItem(RSVP_STORAGE_KEY);
+    } catch (error) {
+      resetSaved = false;
+    }
+    storageUnavailable = !resetSaved;
+    render();
+    showToast(resetSaved ?
+      'Starter guests restored and the demo RSVP cleared in this browser.' :
+      'Demo reset for this visit, but browser storage is unavailable.');
+  });
+
   document.getElementById('add-guest-button').addEventListener('click', function () {
     guestDialog.showModal();
     guestForm.elements.name.focus();
@@ -330,11 +364,18 @@
 
   function updateViewFromHash() {
     var isInvitation = window.location.hash === '#invite';
+    var wasInvitation = document.body.dataset.view === 'invitation';
     document.body.dataset.view = isInvitation ? 'invitation' : 'site';
     invitationSection.hidden = !isInvitation;
     if (isInvitation) {
       showSavedRsvp();
       window.scrollTo(0, 0);
+    } else if (wasInvitation) {
+      var targetId = window.location.hash.slice(1);
+      var returnTarget = targetId && document.getElementById(targetId);
+      window.requestAnimationFrame(function () {
+        (returnTarget || document.getElementById('demo')).scrollIntoView();
+      });
     }
   }
 
