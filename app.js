@@ -2,6 +2,8 @@
   'use strict';
 
   var STORAGE_KEY = 'gatherly-demo-guests';
+  var RSVP_STORAGE_KEY = 'gatherly-demo-invitation-rsvp';
+  var storageUnavailable = false;
   var defaultGuests = [
     { name: 'Olivia Chen', group: 'Family', party: 2, status: 'attending', color: 'OC' },
     { name: 'Noah Williams', group: 'Friends', party: 1, status: 'attending', color: 'NW' },
@@ -52,6 +54,7 @@
       var parsed = JSON.parse(saved);
       return Array.isArray(parsed) && parsed.length ? parsed : defaultGuests.slice();
     } catch (error) {
+      storageUnavailable = true;
       return defaultGuests.slice();
     }
   }
@@ -59,8 +62,35 @@
   function saveGuests() {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(guests));
+      return true;
     } catch (error) {
-      // Ignore storage errors in browsers with restricted localStorage access.
+      storageUnavailable = true;
+      return false;
+    }
+  }
+
+  function loadRsvp() {
+    try {
+      var saved = window.localStorage.getItem(RSVP_STORAGE_KEY);
+      if (!saved) return null;
+      var response = JSON.parse(saved);
+      if (!response || typeof response.name !== 'string' || !response.name.trim() ||
+          !Number.isInteger(response.party) || response.party < 1 || response.party > 10 ||
+          ['attending', 'declined', 'pending'].indexOf(response.status) === -1) return null;
+      return response;
+    } catch (error) {
+      storageUnavailable = true;
+      return null;
+    }
+  }
+
+  function saveRsvp(response) {
+    try {
+      window.localStorage.setItem(RSVP_STORAGE_KEY, JSON.stringify(response));
+      return true;
+    } catch (error) {
+      storageUnavailable = true;
+      return false;
     }
   }
 
@@ -73,6 +103,9 @@
   var searchInput = document.getElementById('guest-search');
   var guestDialog = document.getElementById('guest-dialog');
   var guestForm = document.getElementById('guest-form');
+  var invitationSection = document.getElementById('guest-invitation');
+  var invitationForm = document.getElementById('invitation-rsvp-form');
+  var rsvpConfirmation = document.getElementById('rsvp-confirmation');
   var nextGuestId = 1;
 
   function counts() {
@@ -217,21 +250,22 @@
     activeFilter = 'all';
     searchInput.value = '';
     visibleLimit = 5;
-    saveGuests();
+    var guestSaved = saveGuests();
     render();
     guestForm.reset();
     closeGuestDialog();
-    showToast('Sample guest added locally in this browser. Nothing was sent or saved anywhere else.');
+    showToast(guestSaved ? 'Sample guest added. Saved only in this browser.' :
+      'Sample guest added for this session; browser storage is unavailable.');
   });
 
   document.getElementById('share-button').addEventListener('click', function () {
-    var shareUrl = window.location.href.split('#')[0] + '#demo';
+    var shareUrl = window.location.href.split('#')[0] + '#invite';
     var label = document.getElementById('share-label');
     var button = document.getElementById('share-button');
     function feedback(message, buttonLabel) {
       label.textContent = buttonLabel || 'Link copied';
-      showToast(message || 'Demo link copied. This is a preview only, not an invitation.');
-      window.setTimeout(function () { label.textContent = 'Share demo'; }, 2500);
+      showToast(message || 'Guest invitation preview link copied. RSVP is a local demo only.');
+      window.setTimeout(function () { label.textContent = 'Share invite'; }, 2500);
     }
     function legacyCopy() {
       var input = document.createElement('textarea');
@@ -258,12 +292,12 @@
     button.disabled = true;
     var sharing = navigator.share ? Promise.resolve().then(function () {
       return navigator.share({
-        title: 'Gatherly demo',
-        text: 'Take a look at this Gatherly event-planning preview.',
+        title: "Amelia's first trip around the sun",
+        text: "You're invited to Amelia's garden party. Open this link to see the details and try the demo RSVP.",
         url: shareUrl
       });
     }).then(function () {
-      feedback('Demo link shared. This is a preview only, not an invitation.', 'Shared');
+      feedback('Guest invitation preview shared. No real message or RSVP was sent.', 'Shared');
     }).catch(function (error) {
       if (error && error.name === 'AbortError') return;
       return copyLink();
@@ -272,6 +306,93 @@
       showToast('Could not share automatically. You can copy the demo address from your browser.');
     }).then(function () { button.disabled = false; });
   });
+
+  function showSavedRsvp() {
+    var saved = loadRsvp();
+    if (!saved) {
+      invitationForm.hidden = false;
+      rsvpConfirmation.hidden = true;
+      return;
+    }
+    document.getElementById('rsvp-name').value = saved.name;
+    document.getElementById('rsvp-party').value = saved.party;
+    var selected = invitationForm.querySelector('input[name="status"][value="' + saved.status + '"]');
+    if (selected) selected.checked = true;
+    var responseText = saved.status === 'attending' ? 'We can’t wait to see you there!' :
+      saved.status === 'declined' ? 'Thanks for letting us know. You’ll be missed!' :
+        'Thanks! Your reply is marked as maybe for now.';
+    document.getElementById('rsvp-confirmation-title').textContent = 'Thanks, ' + saved.name + '!';
+    document.getElementById('rsvp-confirmation-copy').textContent =
+      responseText + ' Party size: ' + saved.party + '. This response is saved only in this browser.';
+    invitationForm.hidden = true;
+    rsvpConfirmation.hidden = false;
+  }
+
+  function updateViewFromHash() {
+    var isInvitation = window.location.hash === '#invite';
+    document.body.dataset.view = isInvitation ? 'invitation' : 'site';
+    invitationSection.hidden = !isInvitation;
+    if (isInvitation) {
+      showSavedRsvp();
+      window.scrollTo(0, 0);
+    }
+  }
+
+  invitationForm.addEventListener('submit', function (event) {
+    event.preventDefault();
+    if (!invitationForm.reportValidity()) return;
+    var formData = new FormData(invitationForm);
+    var name = String(formData.get('name')).trim();
+    var party = Number(formData.get('party'));
+    var status = String(formData.get('status'));
+    if (!name || !Number.isInteger(party) || party < 1 || party > 10 ||
+        ['attending', 'declined', 'pending'].indexOf(status) === -1) return;
+
+    var response = { name: name, party: party, status: status };
+    var existingGuest = guests.find(function (guest) {
+      return guest.name.toLocaleLowerCase() === name.toLocaleLowerCase();
+    });
+    if (existingGuest) {
+      existingGuest.party = party;
+      existingGuest.status = status;
+    } else {
+      guests.unshift({
+        name: name,
+        group: 'Invitation link',
+        party: party,
+        status: status,
+        color: name.split(/\s+/).slice(0, 2).map(function (part) {
+          return part.charAt(0);
+        }).join('').toLocaleUpperCase()
+      });
+    }
+    var guestSaved = saveGuests();
+    var responseSaved = saveRsvp(response);
+    render();
+    document.getElementById('rsvp-confirmation-title').textContent = 'Thanks, ' + name + '!';
+    document.getElementById('rsvp-confirmation-copy').textContent = status === 'attending' ?
+      'We can’t wait to see you there! Party size: ' + party + '.' :
+      status === 'declined' ? 'Thanks for letting us know. You’ll be missed!' :
+        'Thanks! Your reply is marked as maybe for now.';
+    if (!guestSaved || !responseSaved) {
+      document.getElementById('rsvp-confirmation-copy').textContent +=
+        ' Browser storage is unavailable, so this demo response may not remain after you leave.';
+    } else {
+      document.getElementById('rsvp-confirmation-copy').textContent +=
+        ' This is a local demo response; it was not sent to a host.';
+    }
+    invitationForm.hidden = true;
+    rsvpConfirmation.hidden = false;
+    rsvpConfirmation.querySelector('h3').focus();
+  });
+
+  document.getElementById('edit-rsvp').addEventListener('click', function () {
+    invitationForm.hidden = false;
+    rsvpConfirmation.hidden = true;
+    document.getElementById('rsvp-name').focus();
+  });
+
+  window.addEventListener('hashchange', updateViewFromHash);
 
   var menuToggle = document.querySelector('.menu-toggle');
   var mobileNav = document.getElementById('mobile-nav');
@@ -291,4 +412,8 @@
   });
 
   render();
+  updateViewFromHash();
+  if (storageUnavailable) {
+    showToast('Browser storage is unavailable. Demo changes may not remain after you leave this page.');
+  }
 }());

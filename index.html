@@ -90,7 +90,7 @@
       <section class="demo-section" id="demo">
         <div class="section-wrap">
           <div class="section-kicker">02 / HAVE A LOOK AROUND</div>
-          <div class="demo-heading"><h2>Your event, all <em>together.</em></h2><p>A local-only preview of the place where the plans come together. Search, filter, add sample guests, or share this demo.</p></div>
+          <div class="demo-heading"><h2>Your event, all <em>together.</em></h2><p>A local-only preview of the place where the plans come together. Search, manage sample guests, and preview or share the guest invitation.</p></div>
           <div class="dashboard">
             <aside class="dashboard__sidebar">
               <a class="dashboard__brand" href="#main"><span class="brand__mark">g</span> gatherly</a>
@@ -104,7 +104,7 @@
               <div class="dashboard__topbar"><span class="breadcrumb">My events <span>/</span> Amelia's first trip around the sun</span><button class="icon-button" aria-label="More event options" type="button">···</button></div>
               <div class="event-heading">
                 <div><div class="event-status"><span></span> PUBLISHED <span class="status-divider">·</span> <span class="event-date">JUNE 13, 2027</span></div><h3>Amelia's first trip around the sun</h3><p>The Willow House · Portland, Oregon</p></div>
-                <button class="button button--outline button--share" id="share-button" type="button"><span aria-hidden="true">↗</span> <span id="share-label">Share demo</span></button>
+                <div class="event-heading__actions"><a class="button button--outline button--preview" href="#invite">Preview guest invite <span aria-hidden="true">↗</span></a><button class="button button--outline button--share" id="share-button" type="button"><span aria-hidden="true">↗</span> <span id="share-label">Share invite</span></button></div>
               </div>
               <div class="stat-grid" aria-live="polite">
                 <div class="stat-card"><span>INVITED</span><b id="invited-count">38</b><small>across 3 groups</small></div>
@@ -113,7 +113,7 @@
                 <div class="stat-card"><span>CAN'T MAKE IT</span><b id="declined-count">3</b><small>sent with love</small></div>
               </div>
               <div class="guest-panel">
-                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Sample guest list - changes stay on this page.</p></div><button class="button button--dark button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button></div>
+                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Fictional guest data, stored in this browser only.</p></div><button class="button button--dark button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button></div>
                 <div class="guest-toolbar"><div class="filter-tabs" role="group" aria-label="Filter guests">
                   <button class="filter-tab filter-tab--active" type="button" data-filter="all" aria-pressed="true">Everyone <span id="filter-all-count">38</span></button>
                   <button class="filter-tab" type="button" data-filter="attending" aria-pressed="false">Attending</button>
@@ -125,7 +125,43 @@
               </div>
             </div>
           </div>
-          <p class="demo-disclaimer">Demo only. All guests and changes are fictional, temporary, and local to this page. Nothing is saved, sent, or connected to an account.</p>
+          <p class="demo-disclaimer">Demo only. Guest edits and RSVP replies are stored in this browser to make the walkthrough interactive. They are not sent to a host or synced across devices.</p>
+        </div>
+      </section>
+
+      <section class="guest-invitation" id="guest-invitation" aria-labelledby="invitation-title" hidden>
+        <div class="guest-invitation__frame">
+          <a class="guest-invitation__brand" href="#main" aria-label="Return to Gatherly demo"><span class="brand__mark" aria-hidden="true">g</span><span>gatherly</span></a>
+          <article class="guest-invitation__card">
+            <div class="guest-invitation__eyebrow"><span aria-hidden="true">✳</span> YOU'RE INVITED</div>
+            <p class="guest-invitation__overline">A garden party for</p>
+            <h1 id="invitation-title">Amelia's<br><em>first trip</em><br>around the sun</h1>
+            <p class="guest-invitation__intro">Our little sunshine is turning one! Join us for a lovely afternoon in the garden with good food, sweet treats, and our favorite people.</p>
+            <div class="guest-invitation__details">
+              <div><span class="invitation-detail__icon" aria-hidden="true">◷</span><span><b>Sunday, June 13, 2027</b><small>2:00–5:00 PM · Please reply by June 1</small></span></div>
+              <div><span class="invitation-detail__icon" aria-hidden="true">⌖</span><span><b>The Willow House</b><small>Portland, Oregon</small></span></div>
+              <div><span class="invitation-detail__icon" aria-hidden="true">♡</span><span><b>A little note</b><small>Garden party attire · Little ones welcome</small></span></div>
+            </div>
+            <div class="guest-invitation__rsvp">
+              <div class="guest-invitation__rsvp-heading"><span class="section-kicker">KINDLY REPLY</span><h2>Will you be there?</h2><p>No account needed. Just let us know so we can save you a place.</p></div>
+              <form id="invitation-rsvp-form">
+                <label class="form-field">Your name<input id="rsvp-name" name="name" type="text" maxlength="60" required autocomplete="name" placeholder="e.g. Alex Morgan"></label>
+                <fieldset class="rsvp-choices">
+                  <legend>Your reply</legend>
+                  <label><input type="radio" name="status" value="attending" required><span><b>Joyfully accepts</b><small>Count me in</small></span></label>
+                  <label><input type="radio" name="status" value="declined"><span><b>Regretfully declines</b><small>Sorry to miss it</small></span></label>
+                  <label><input type="radio" name="status" value="pending"><span><b>Not sure yet</b><small>I'll let you know</small></span></label>
+                </fieldset>
+                <label class="form-field rsvp-party-size">Party size<input id="rsvp-party" name="party" type="number" min="1" max="10" value="1" required><small>Include yourself and any guests in your party.</small></label>
+                <button class="button button--dark rsvp-submit" type="submit">Send my reply <span aria-hidden="true">↗</span></button>
+              </form>
+              <div class="rsvp-confirmation" id="rsvp-confirmation" role="status" aria-live="polite" hidden>
+                <span class="rsvp-confirmation__icon" aria-hidden="true">✓</span><h3 id="rsvp-confirmation-title" tabindex="-1">Thank you for replying!</h3><p id="rsvp-confirmation-copy"></p><button class="text-link" id="edit-rsvp" type="button">Update your reply</button>
+              </div>
+            </div>
+            <p class="guest-invitation__demo-note">This is a fictional event invitation prototype. Your RSVP is saved only in this browser; it is not sent to a host.</p>
+          </article>
+          <a class="guest-invitation__back" href="#demo">← Back to the host demo</a>
         </div>
       </section>
 
