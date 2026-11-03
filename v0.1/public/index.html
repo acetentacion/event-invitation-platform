@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#f8f6f1">
+  <meta name="description" content="Gatherly local event invitations and RSVP workspace.">
+  <title>Gatherly — Local RSVP workspace</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header" id="site-header">
+    <a class="brand" href="/" aria-label="Gatherly home">
+      <span class="brand__mark" aria-hidden="true">g</span>
+      <span class="brand__name">gatherly</span>
+    </a>
+    <p class="site-header__note">LOCAL RSVP <span aria-hidden="true">·</span> V0.1</p>
+  </header>
+  <main>
+    <aside class="warning" id="development-warning"><strong>Local-only development build.</strong> Synthetic data only. Invitation email is captured locally, never sent. Do not enter real personal data; this prototype does not provide production privacy.</aside>
+    <p id="global-message" class="message" role="status" aria-live="polite"></p>
+    <section id="auth" class="card" hidden>
+      <p class="section-kicker">YOUR GATHERLY WORKSPACE</p>
+      <h1 id="auth-title">Host setup</h1>
+      <p id="auth-copy" class="muted"></p>
+      <form id="auth-form">
+        <label>Email <input name="email" type="email" autocomplete="email" maxlength="254" required></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password" minlength="12" maxlength="200" required></label>
+        <button id="auth-submit">Create local host account</button>
+      </form>
+    </section>
+    <section id="host" class="host-workspace" hidden>
+      <aside class="workspace-sidebar" aria-label="Workspace navigation">
+        <a class="workspace-brand" href="/" aria-label="Gatherly home"><span class="brand__mark" aria-hidden="true">g</span><span>gatherly</span></a>
+        <p class="workspace-label">LOCAL WORKSPACE</p>
+        <nav class="workspace-nav" aria-label="Host workspace">
+          <a class="workspace-link is-active" href="#events"><span aria-hidden="true">▦</span> My events</a>
+          <a class="workspace-link" href="#create-event"><span aria-hidden="true">＋</span> Create event</a>
+          <button id="outbox-toggle" class="workspace-link" type="button"><span aria-hidden="true">✉</span> Local email outbox</button>
+        </nav>
+        <div class="workspace-sidebar__foot">
+          <span class="workspace-avatar" aria-hidden="true">L</span>
+          <span><b>Local host</b><small>This browser only</small></span>
+        </div>
+      </aside>
+      <div class="workspace-main">
+        <div class="page-title">
+          <div><p class="section-kicker">YOUR EVENTS</p><h1>Host dashboard</h1></div>
+          <button id="logout" class="secondary">Sign out</button>
+        </div>
+        <section id="events" class="events-workspace" aria-label="Your events"></section>
+        <section id="create-event" class="card create-event-card" aria-labelledby="create-event-title">
+          <div class="create-event-card__heading">
+            <div><p class="section-kicker">START WITH THE DETAILS</p><h2 id="create-event-title">Create an event</h2></div>
+            <p class="muted">Set up a local invitation and choose whether replies are for individuals or a household.</p>
+          </div>
+          <form id="event-form">
+            <label>Event name <input name="title" maxlength="100" required></label>
+            <div class="columns">
+              <label>Event date <input name="eventDate" type="date" required></label>
+              <label>RSVP deadline <input name="rsvpDeadline" type="datetime-local"></label>
+            </div>
+            <label>Location (optional) <input name="location" maxlength="200"></label>
+            <label>RSVP unit
+              <select name="guestMode"><option value="individual">Individual</option><option value="household">Household / group</option></select>
+            </label>
+            <button>Create event</button>
+          </form>
+        </section>
+        <section id="outbox" class="card outbox-card" hidden>
+          <p class="section-kicker">LOCAL TEST MESSAGES</p>
+          <h2>Local email outbox</h2><p class="muted">Captured test messages only; no email is delivered.</p>
+          <div id="outbox-list"></div>
+        </section>
+      </div>
+    </section>
+    <section id="guest" class="invitation-card" aria-label="Invitation" hidden>
+      <div class="invitation-brand" aria-label="Gatherly">
+        <span class="brand__mark" aria-hidden="true">g</span><span>gatherly</span>
+      </div>
+      <div class="guest-experience-controls">
+        <button id="guest-envelope" class="reveal-envelope" type="button" aria-controls="guest-content" hidden>
+          <span class="envelope-art" aria-hidden="true"><span></span></span>
+          <span class="reveal-envelope__label">Open your invitation</span>
+          <span class="reveal-envelope__hint">A little note is waiting inside</span>
+        </button>
+        <div class="guest-audio-control" hidden>
+          <button id="guest-chime" class="guest-chime-control secondary" type="button">Play a gentle chime</button>
+          <p id="guest-audio-status" class="guest-audio-status help" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div id="guest-content" class="guest-content" hidden>
+      <article class="invitation-paper">
+        <svg class="invitation-botanical invitation-botanical--top" viewBox="0 0 220 190" aria-hidden="true">
+          <path d="M17 169C82 137 113 85 143 15M62 132c-3-31 13-48 40-53-1 27-13 45-40 53Zm28-35c-1-30 16-47 44-50-2 28-17 45-44 50Zm25-42c2-24 18-37 41-39-4 23-19 36-41 39Zm-33 71c-25-15-47-10-64 12 23 14 45 12 64-12Z"/>
+        </svg>
+        <svg class="invitation-botanical invitation-botanical--bottom" viewBox="0 0 220 190" aria-hidden="true">
+          <path d="M17 169C82 137 113 85 143 15M62 132c-3-31 13-48 40-53-1 27-13 45-40 53Zm28-35c-1-30 16-47 44-50-2 28-17 45-44 50Zm25-42c2-24 18-37 41-39-4 23-19 36-41 39Zm-33 71c-25-15-47-10-64 12 23 14 45 12 64-12Z"/>
+        </svg>
+        <img id="guest-cover" class="invitation-cover preview-image" alt="" hidden>
+        <div class="invitation-copy">
+          <p class="invitation-eyebrow"><span aria-hidden="true">✳</span> YOU'RE INVITED</p>
+          <p id="guest-greeting" class="invitation-overline"></p>
+          <h1 id="guest-title" class="preview-title"></h1>
+          <p id="guest-details" class="invitation-intro"></p>
+          <div class="invitation-details" aria-label="Invitation details">
+            <div class="invitation-detail">
+              <span class="invitation-detail__icon" aria-hidden="true">◷</span>
+              <span><b>Date</b><small id="guest-date"></small></span>
+            </div>
+            <div id="guest-location-row" class="invitation-detail" hidden>
+              <span class="invitation-detail__icon" aria-hidden="true">⌖</span>
+              <span><b>Location</b><small id="guest-location"></small></span>
+            </div>
+            <div id="guest-deadline-row" class="invitation-detail" hidden>
+              <span class="invitation-detail__icon" aria-hidden="true">♡</span>
+              <span><b>Kindly reply by</b><small id="guest-deadline"></small></span>
+            </div>
+            <div class="invitation-detail">
+              <span class="invitation-detail__icon" aria-hidden="true">＋</span>
+              <span><b>For your party</b><small id="guest-capacity"></small></span>
+            </div>
+          </div>
+          <section id="guest-rsvp" class="invitation-rsvp" aria-labelledby="guest-rsvp-title">
+            <div class="invitation-rsvp__heading">
+              <p class="section-kicker">KINDLY REPLY</p>
+              <h2 id="guest-rsvp-title">Will you be there?</h2>
+              <p>Choose the response that works for you.</p>
+            </div>
+            <p id="guest-closed" class="guest-closed" role="status" hidden></p>
+            <form id="rsvp-form">
+              <fieldset class="rsvp-choices" id="guest-response-options" tabindex="-1">
+                <legend>Your reply</legend>
+                <label><input type="radio" name="answer" value="yes" required><span><b>Joyfully accepts</b><small>Count me in</small></span></label>
+                <label><input type="radio" name="answer" value="no"><span><b>Regretfully declines</b><small>Sorry to miss it</small></span></label>
+                <label><input type="radio" name="answer" value="maybe"><span><b>Not sure yet</b><small>I'll let you know</small></span></label>
+              </fieldset>
+              <label class="rsvp-party-size">How many people are coming?
+                <input name="partySize" type="number" min="1" inputmode="numeric" aria-describedby="party-limit-hint" required>
+                <small id="party-limit-hint" class="help"></small>
+              </label>
+              <button class="rsvp-submit" type="submit">Save my reply <span aria-hidden="true">↗</span></button>
+            </form>
+            <div id="rsvp-confirmation" class="rsvp-confirmation" role="status" aria-live="polite" hidden>
+              <span class="rsvp-confirmation__icon" aria-hidden="true">✓</span>
+              <h3 id="rsvp-confirmation-title" tabindex="-1">Thank you for replying.</h3>
+              <p id="rsvp-confirmation-copy"></p>
+              <button id="edit-rsvp" class="text-button" type="button">Update your reply</button>
+            </div>
+            <p id="guest-message" class="message" role="status" aria-live="polite"></p>
+          </section>
+          <div id="guest-unavailable" class="guest-unavailable" hidden>
+            <span aria-hidden="true">✳</span><p id="guest-unavailable-copy"></p>
+          </div>
+        </div>
+      </article>
+      <p class="invitation-footnote">Your reply is saved with this invitation. No email is sent from here.</p>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

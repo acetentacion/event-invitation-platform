@@ -1,0 +1,22 @@
+name: "FreeLLMAPI Config"
+version: 1.0.0
+schema: v1
+
+models:
+  - name: "FreeLLMAPI Auto"
+    provider: openai
+    model: auto
+    apiBase: "http://127.0.0.1:31415/v1"
+    apiKey: "freellmapi-3d2e45ec14ed49a44142d84042f440f7cdd1d35c87c89b34"
+    roles:
+      - chat
+      - edit
+      - apply
+
+  - name: "FreeLLMAPI Autocomplete"
+    provider: openai
+    model: auto
+    apiBase: "http://127.0.0.1:31415/v1"
+    apiKey: "freellmapi-3d2e45ec14ed49a44142d84042f440f7cdd1d35c87c89b34"
+    roles:
+      - autocomplete
