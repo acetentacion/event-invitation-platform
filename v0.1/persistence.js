@@ -120,8 +120,10 @@ class Store {
         email TEXT NOT NULL,
         party_limit INTEGER NOT NULL CHECK (party_limit BETWEEN 1 AND 20),
         token_hash TEXT NOT NULL UNIQUE,
+        invite_url TEXT NOT NULL,
         revoked_at TEXT,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        UNIQUE(event_id, email)
       );
       CREATE TABLE IF NOT EXISTS rsvps (
         id INTEGER PRIMARY KEY,
@@ -156,6 +158,13 @@ class Store {
       this.db.exec(
         `ALTER TABLE events ADD COLUMN invitation_settings_json TEXT NOT NULL DEFAULT '${JSON.stringify(DEFAULT_INVITATION_SETTINGS)}'`
       );
+    }
+    const guestColumns = this.db.prepare('PRAGMA table_info(guest_units)').all();
+    if (!guestColumns.some((column) => column.name === 'invite_url')) {
+      this.db.exec('ALTER TABLE guest_units ADD COLUMN invite_url TEXT NOT NULL DEFAULT ""');
+    }
+    if (!guestColumns.some((column) => column.name === 'email')) {
+      // Legacy schema without email; nothing to backfill safely.
     }
   }
 
@@ -294,8 +303,8 @@ class Store {
   createGuestsAndOutbox(entries) {
     return this.transaction(() => {
       const insertGuest = this.db.prepare(
-        `INSERT INTO guest_units (event_id, name, email, party_limit, token_hash, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO guest_units (event_id, name, email, party_limit, token_hash, invite_url, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       );
       const insertOutbox = this.db.prepare(
         `INSERT INTO email_outbox (guest_unit_id, recipient, subject, body, created_at)
@@ -303,7 +312,8 @@ class Store {
       );
       return entries.map(({ guest, message, createdAt }) => {
         const inserted = insertGuest.run(
-          guest.eventId, guest.name, guest.email, guest.partyLimit, guest.tokenHash, createdAt
+          guest.eventId, guest.name, guest.email, guest.partyLimit,
+          guest.tokenHash, guest.inviteUrl, createdAt
         );
         const id = Number(inserted.lastInsertRowid);
         insertOutbox.run(id, message.recipient, message.subject, message.body, createdAt);
@@ -334,13 +344,17 @@ class Store {
 
   guestInviteLink(guestId, hostId) {
     return this.db.prepare(
-      `SELECT g.revoked_at AS revokedAt, o.body
+      `SELECT g.revoked_at AS revokedAt, g.invite_url AS inviteUrl
        FROM guest_units g
        JOIN events e ON e.id = g.event_id
-       JOIN email_outbox o ON o.guest_unit_id = g.id
-       WHERE g.id = ? AND e.host_id = ?
-       ORDER BY o.created_at DESC LIMIT 1`
+       WHERE g.id = ? AND e.host_id = ?`
     ).get(guestId, hostId);
+  }
+
+  emailExists(eventId, email) {
+    return Boolean(this.db.prepare(
+      'SELECT 1 FROM guest_units WHERE event_id = ? AND email = ?'
+    ).get(eventId, email));
   }
 
   setEventOpen(eventId, hostId, open, updatedAt) {
@@ -384,13 +398,24 @@ class Store {
   }
 
   saveRsvp(guestId, answer, partySize, updatedAt) {
-    this.db.prepare(
-      `INSERT INTO rsvps (guest_unit_id, answer, party_size, updated_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(guest_unit_id) DO UPDATE SET
-         answer = excluded.answer, party_size = excluded.party_size,
-         updated_at = excluded.updated_at`
-    ).run(guestId, answer, partySize, updatedAt);
+    return this.transaction(() => {
+      const guest = this.db.prepare(
+        'SELECT id FROM guest_units WHERE id = ?'
+      ).get(guestId);
+      if (!guest) {
+        const error = new Error('Guest not found.');
+        error.code = 'NOT_FOUND';
+        throw error;
+      }
+      this.db.prepare(
+        `INSERT INTO rsvps (guest_unit_id, answer, party_size, updated_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(guest_unit_id) DO UPDATE SET
+           answer = excluded.answer, party_size = excluded.party_size,
+           updated_at = excluded.updated_at`
+      ).run(guestId, answer, partySize, updatedAt);
+      return true;
+    });
   }
 
   listOutbox(hostId) {

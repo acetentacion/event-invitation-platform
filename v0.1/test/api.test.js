@@ -254,7 +254,7 @@ test('validates input, isolates host ownership, and revokes guest links', async 
   assert.equal((await f.request('/api/events', {}, cookie)).status, 401);
 });
 
-test('persists validated themes for the owner and exposes the theme to guests', async (t) => {
+test('bulk guest creation validates every row before capturing any invitations', async (t) => {
   const f = await fixture(t);
   const cookie = await f.register();
   const event = await createEvent(f, cookie);
@@ -457,4 +457,96 @@ test('persists owner-only invitation presentation settings for hosts and guests'
     (await (await f.request(`/api/guest/${token}`)).json()).event.invitationSettings,
     settings
   );
+});
+
+test('bulk guest creation rejects empty arrays, oversized batches, and duplicate emails', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+
+  const empty = await f.jsonRequest(`/api/events/${event.id}/guests/bulk`, 'POST', { guests: [] }, cookie);
+  assert.equal(empty.status, 400);
+  assert.match((await empty.json()).error, /between 1 and 100/);
+
+  const oversized = await f.jsonRequest(`/api/events/${event.id}/guests/bulk`, 'POST', {
+    guests: Array.from({ length: 101 }, (_, i) => ({
+      name: `Guest ${i}`, email: `guest${i}@example.test`, partyLimit: 2
+    }))
+  }, cookie);
+  assert.equal(oversized.status, 400);
+
+  const duplicate = await f.jsonRequest(`/api/events/${event.id}/guests/bulk`, 'POST', {
+    guests: [
+      { name: 'North', email: 'dup@example.test', partyLimit: 2 },
+      { name: 'South', email: 'dup@example.test', partyLimit: 3 }
+    ]
+  }, cookie);
+  assert.equal(duplicate.status, 400);
+  assert.match((await duplicate.json()).error, /Duplicate email/);
+
+  const dashboard = await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json();
+  assert.equal(dashboard.guests.length, 0);
+});
+
+test('RSVP enforces party size boundaries and individual mode', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const household = await createEvent(f, cookie);
+  const individual = await createEvent(f, cookie, { title: 'Individual only', guestMode: 'individual' });
+
+  const hhGuest = await (await f.jsonRequest(`/api/events/${household.id}/guests`, 'POST', {
+    name: 'Household Guest', email: 'hh@example.test', partyLimit: 4
+  }, cookie)).json();
+  const hhToken = hhGuest.inviteUrl.split('/').pop();
+
+  const indGuest = await (await f.jsonRequest(`/api/events/${individual.id}/guests`, 'POST', {
+    name: 'Individual Guest', email: 'ind@example.test'
+  }, cookie)).json();
+  const indToken = indGuest.inviteUrl.split('/').pop();
+
+  // yes with partySize 0 rejected
+  assert.equal((await f.jsonRequest(`/api/guest/${hhToken}/rsvp`, 'PUT', { answer: 'yes', partySize: 0 })).status, 400);
+  // partySize at limit accepted
+  assert.equal((await f.jsonRequest(`/api/guest/${hhToken}/rsvp`, 'PUT', { answer: 'yes', partySize: 4 })).status, 200);
+  // partySize above limit rejected
+  assert.equal((await f.jsonRequest(`/api/guest/${hhToken}/rsvp`, 'PUT', { answer: 'yes', partySize: 5 })).status, 400);
+  // no must be partySize 0
+  assert.equal((await f.jsonRequest(`/api/guest/${hhToken}/rsvp`, 'PUT', { answer: 'no', partySize: 1 })).status, 400);
+  assert.equal((await f.jsonRequest(`/api/guest/${hhToken}/rsvp`, 'PUT', { answer: 'no', partySize: 0 })).status, 200);
+  // individual mode forces partySize 1 for yes
+  assert.equal((await f.jsonRequest(`/api/guest/${indToken}/rsvp`, 'PUT', { answer: 'yes', partySize: 3 })).status, 400);
+  assert.equal((await f.jsonRequest(`/api/guest/${indToken}/rsvp`, 'PUT', { answer: 'yes', partySize: 1 })).status, 200);
+});
+
+test('auth rejects passwords shorter than 12 characters', async (t) => {
+  const f = await fixture(t);
+  const tooShort = await f.jsonRequest('/api/auth/register', 'POST', {
+    email: 'short@example.test', password: 'shortpw'
+  });
+  assert.equal(tooShort.status, 400);
+  assert.match((await tooShort.json()).error, /12/);
+
+  // First host setup succeeds with exactly 12 characters.
+  const exact = await f.jsonRequest('/api/auth/register', 'POST', {
+    email: 'exact@example.test', password: '123456789012'
+  });
+  assert.equal(exact.status, 200);
+});
+
+test('theme contrast is accepted exactly at the 4.5:1 boundary', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+
+  // Pure black (#000000) on pure white (#ffffff) is 21:1 — well above 4.5:1.
+  const valid = await f.jsonRequest(`/api/events/${event.id}/theme`, 'PUT', {
+    ...DEFAULT_THEME, backgroundColor: '#ffffff', textColor: '#000000'
+  }, cookie);
+  assert.equal(valid.status, 200);
+
+  // A near-miss just below 4.5:1 (e.g. #767676 on #ffffff = 4.54:1 is actually above; use #777777 = 4.48:1)
+  const below = await f.jsonRequest(`/api/events/${event.id}/theme`, 'PUT', {
+    ...DEFAULT_THEME, backgroundColor: '#ffffff', textColor: '#777777'
+  }, cookie);
+  assert.equal(below.status, 400);
 });

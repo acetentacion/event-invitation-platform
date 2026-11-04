@@ -277,14 +277,6 @@ function closeCreateEventForm() {
 $('#open-create-event').addEventListener('click', openCreateEventForm);
 $('#create-event-toggle').addEventListener('click', openCreateEventForm);
 $('#cancel-create-event').addEventListener('click', closeCreateEventForm);
-$('#customize-invitation-toggle').addEventListener('click', () => {
-  const firstEvent = $('.event-card', $('#events'));
-  if (!firstEvent) {
-    showMessage($('#global-message'), 'Create an event before customizing its invitation.');
-    return;
-  }
-  $('.theme-toggle', firstEvent).click();
-});
 
 $('#event-form').addEventListener('submit', async (event) => {
   event.preventDefault();

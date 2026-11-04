@@ -531,6 +531,9 @@ function createApp(options = {}) {
           if (!validSyntheticEmail(email)) {
             throw invalid('Use a synthetic guest email at a reserved test domain, such as name@example.test.');
           }
+          if (store.emailExists(eventId, email)) {
+            throw invalid('A guest unit with that email is already invited to this event.');
+          }
           const partyLimit = event.guestMode === 'individual' ? 1 : input.partyLimit;
           if (!Number.isInteger(partyLimit) || partyLimit < 1 || partyLimit > 20) {
             throw invalid('Party limit must be a whole number from 1 to 20.');
@@ -541,7 +544,8 @@ function createApp(options = {}) {
           const guestId = Number(store.createGuestAndOutbox({
             eventId, name, email, partyLimit,
             groupName: typeof input.groupName === 'string' ? input.groupName.trim().slice(0, 100) : '',
-            tokenHash: sha256(token)
+            tokenHash: sha256(token),
+            inviteUrl
           }, {
             recipient: email,
             subject: `Your invitation: ${event.title}`,
@@ -576,7 +580,7 @@ function createApp(options = {}) {
             }
             const token = crypto.randomBytes(32).toString('base64url');
             const inviteUrl = `/rsvp/${token}`;
-            const guest = { eventId, name, email, partyLimit, tokenHash: sha256(token) };
+            const guest = { eventId, name, email, partyLimit, tokenHash: sha256(token), inviteUrl };
             return {
               guest,
               inviteUrl,
@@ -588,6 +592,16 @@ function createApp(options = {}) {
               }
             };
           });
+          const seen = new Set();
+          for (const { guest } of entries) {
+            if (store.emailExists(eventId, guest.email)) {
+              throw invalid(`A guest unit with that email is already invited to this event.`);
+            }
+            if (seen.has(guest.email)) {
+              throw invalid(`Duplicate email in guest list: ${guest.email}.`);
+            }
+            seen.add(guest.email);
+          }
           const ids = store.createGuestsAndOutbox(entries);
           return json(res, 201, {
             guests: entries.map(({ guest, inviteUrl }, index) => ({
@@ -623,9 +637,8 @@ function createApp(options = {}) {
           : null;
         if (!record) throw invalid('Guest not found.', 404);
         if (record.revokedAt) throw invalid('Invite link has been revoked.', 410);
-        const match = record.body.match(/RSVP using your private local link:\s*(\/rsvp\/[A-Za-z0-9_-]{30,60})/);
-        if (!match) throw invalid('Invite link is unavailable.', 404);
-        return json(res, 200, { inviteUrl: match[1] });
+        if (!record.inviteUrl) throw invalid('Invite link is unavailable.', 404);
+        return json(res, 200, { inviteUrl: record.inviteUrl });
       }
 
       const revokeMatch = pathname.match(/^\/api\/guests\/(\d+)\/revoke$/);

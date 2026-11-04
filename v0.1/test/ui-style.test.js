@@ -20,7 +20,9 @@ test('local UI carries the Gatherly brand and keeps its synthetic-data warning',
   assert.match(css, /--serif:\s*"Playfair Display", Georgia/i);
   assert.match(html, /id="create-event"[^>]*hidden/);
   assert.match(html, /id="open-create-event"[^>]*>Create event</);
-  assert.match(html, /id="customize-invitation-toggle" class="workspace-link"/);
+  assert.match(html, /id="create-event-toggle"[^>]*>[\s\S]*Create event/);
+  assert.match(html, /id="outbox-toggle"[^>]*>[\s\S]*Local email outbox/);
+  assert.match(css, /@media \(max-width:\s*460px\)[\s\S]*\.rsvp-choices\s*\{[\s\S]*grid-template-columns:\s*1fr/);
 });
 
 test('visual alignment retains visible focus, mobile layouts, and invitation theme contrast', () => {

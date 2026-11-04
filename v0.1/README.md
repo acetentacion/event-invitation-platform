@@ -8,9 +8,8 @@ It uses Node.js built-ins and SQLite; there are no external services or dependen
 - First-run local host setup with scrypt password hashes and cookie sessions.
 - Event creation with individual or household/group RSVP mode.
 - Draft/published event status and a host publish control.
-- Unique, revocable bearer links; household party limits are checked by the server.
-- Hosts can paste up to 100 tab-separated guest rows at once; each RSVP link and local outbox message is created atomically after validation. A single invalid row rejects the entire batch.
-- Hosts can retrieve a previously generated guest invite link via `GET /api/guests/:id/invite-link` (404 for unknown/other-host guests, 410 if revoked).
+- Unique, revocable bearer links; household party limits are checked by the server. Each guest unit stores its RSVP URL in `guest_units.invite_url`, so `GET /api/guests/:id/invite-link` reads the retained link directly (404 for unknown or other-host guests, 410 if revoked). The outbox body is a captured message, not the source of truth for the link.
+- Hosts can paste up to 100 tab-separated guest rows at once; each RSVP link and local outbox message is created atomically after validation. A single invalid row rejects the entire batch. Duplicate emails within a batch or against an existing guest unit for the same event are rejected.
 - Guests can submit or revise yes/no/maybe and party size.
 - Server-enforced deadline closure and explicit host reopen/close.
 - Dashboard counts reflect the latest persisted RSVP, including attending people.

@@ -547,6 +547,12 @@ main.guest-main {
   gap: 8px;
   padding: 12px 10px;
   color: var(--invite-text);
+}
+
+@media (max-width: 460px) {
+  .rsvp-choices { grid-template-columns: 1fr; }
+  .rsvp-choices label { min-height: 64px; }
+}
   background: var(--invite-background);
   border: 1px solid color-mix(in srgb, var(--invite-primary) 28%, #e3e1d9);
   cursor: pointer;

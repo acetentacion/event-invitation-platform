@@ -230,8 +230,8 @@ test('event cards publish drafts and refresh to published state', async () => {
   const guestActions = card.parts['.publish'].afterElements[0];
   assert.equal(guestActions.attributes['aria-label'], 'Add guests');
   assert.deepEqual(guestActions.children, [card.guestActionButtons.single, card.guestActionButtons.bulk]);
-  getElement('#customize-invitation-toggle').listeners.get('click')();
-  assert.equal(card.parts['.theme-panel'].hidden, false, 'sidebar shortcut opens the first event editor');
+  card.parts['.theme-toggle'].listeners.get('click')();
+  assert.equal(card.parts['.theme-panel'].hidden, false, 'theme toggle opens the editor');
   assert.equal(card.parts['.theme-panel'].scrolledIntoView, true, 'opened settings are brought into view');
   card.parts['.theme-toggle'].listeners.get('click')();
   assert.equal(card.parts['.theme-panel'].hidden, true, 'event-header action closes the editor');
