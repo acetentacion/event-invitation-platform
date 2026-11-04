@@ -37,7 +37,8 @@
         <p class="workspace-label">LOCAL WORKSPACE</p>
         <nav class="workspace-nav" aria-label="Host workspace">
           <a class="workspace-link is-active" href="#events"><span aria-hidden="true">▦</span> My events</a>
-          <a class="workspace-link" href="#create-event"><span aria-hidden="true">＋</span> Create event</a>
+          <button id="create-event-toggle" class="workspace-link" type="button"><span aria-hidden="true">＋</span> Create event</button>
+          <button id="customize-invitation-toggle" class="workspace-link" type="button"><span aria-hidden="true">✦</span> Customize invitation</button>
           <button id="outbox-toggle" class="workspace-link" type="button"><span aria-hidden="true">✉</span> Local email outbox</button>
         </nav>
         <div class="workspace-sidebar__foot">
@@ -48,13 +49,19 @@
       <div class="workspace-main">
         <div class="page-title">
           <div><p class="section-kicker">YOUR EVENTS</p><h1>Host dashboard</h1></div>
-          <button id="logout" class="secondary">Sign out</button>
+          <div class="page-title-actions">
+            <button id="open-create-event" type="button">Create event</button>
+            <button id="logout" class="secondary">Sign out</button>
+          </div>
         </div>
         <section id="events" class="events-workspace" aria-label="Your events"></section>
-        <section id="create-event" class="card create-event-card" aria-labelledby="create-event-title">
+        <section id="create-event" class="card create-event-card" aria-labelledby="create-event-title" hidden>
           <div class="create-event-card__heading">
             <div><p class="section-kicker">START WITH THE DETAILS</p><h2 id="create-event-title">Create an event</h2></div>
-            <p class="muted">Set up a local invitation and choose whether replies are for individuals or a household.</p>
+            <div class="create-event-card__heading-actions">
+              <p class="muted">Set up a local invitation and choose whether replies are for individuals or a household.</p>
+              <button id="cancel-create-event" class="secondary" type="button">Cancel</button>
+            </div>
           </div>
           <form id="event-form">
             <label>Event name <input name="title" maxlength="100" required></label>
@@ -87,12 +94,14 @@
           <span class="reveal-envelope__hint">A little note is waiting inside</span>
         </button>
         <div class="guest-audio-control" hidden>
-          <button id="guest-chime" class="guest-chime-control secondary" type="button">Play a gentle chime</button>
+          <button id="guest-chime" class="guest-chime-control secondary" type="button" hidden>Play gentle background music</button>
           <p id="guest-audio-status" class="guest-audio-status help" role="status" aria-live="polite"></p>
         </div>
       </div>
       <div id="guest-content" class="guest-content" hidden>
       <article class="invitation-paper">
+        <span class="invitation-sparkle-overlay" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="invitation-leaves" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span>
         <svg class="invitation-botanical invitation-botanical--top" viewBox="0 0 220 190" aria-hidden="true">
           <path d="M17 169C82 137 113 85 143 15M62 132c-3-31 13-48 40-53-1 27-13 45-40 53Zm28-35c-1-30 16-47 44-50-2 28-17 45-44 50Zm25-42c2-24 18-37 41-39-4 23-19 36-41 39Zm-33 71c-25-15-47-10-64 12 23 14 45 12 64-12Z"/>
         </svg>

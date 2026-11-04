@@ -62,7 +62,9 @@ function normalizeTheme(theme = {}) {
 function normalizeInvitationSettings(settings = {}) {
   return {
     revealMode: settings.revealMode === 'envelope' ? 'envelope' : 'direct',
-    chimeEnabled: settings.chimeEnabled === true
+    chimeEnabled: settings.chimeEnabled === true,
+    revealMotion: ['fade', 'slide-up'].includes(settings.revealMotion) ? settings.revealMotion : 'none',
+    celebration: ['sparkle', 'leaves'].includes(settings.celebration) ? settings.celebration : 'off'
   };
 }
 
@@ -73,6 +75,16 @@ function syncInvitationPresentation(invitation, settings, isPreview = false) {
   const audioControl = $('.guest-audio-control', invitation);
   const chime = $('.guest-chime-control', invitation);
   const audioStatus = $('.guest-audio-status', invitation);
+  if (content) {
+    content.classList.remove('reveal-motion-fade', 'reveal-motion-slide-up');
+    if (safeSettings.revealMotion !== 'none') {
+      content.classList.add(`reveal-motion-${safeSettings.revealMotion}`);
+    }
+  }
+  invitation.classList.remove('has-celebration');
+  invitation.classList.remove('has-falling-leaves');
+  if (safeSettings.celebration === 'sparkle') invitation.classList.add('has-celebration');
+  if (safeSettings.celebration === 'leaves') invitation.classList.add('has-falling-leaves');
   if (envelope) {
     envelope.hidden = safeSettings.revealMode !== 'envelope';
     envelope.disabled = isPreview;
@@ -80,14 +92,15 @@ function syncInvitationPresentation(invitation, settings, isPreview = false) {
     else envelope.setAttribute('aria-controls', 'guest-content');
   }
   if (content) content.hidden = safeSettings.revealMode === 'envelope';
-  if (audioControl) audioControl.hidden = !safeSettings.chimeEnabled;
+  if (audioControl) audioControl.hidden = !safeSettings.chimeEnabled || !isPreview;
   if (chime) {
     chime.disabled = isPreview;
-    chime.textContent = isPreview ? 'Play a gentle chime (guest only)' : 'Play a gentle chime';
+    chime.hidden = true;
+    chime.textContent = 'Play gentle background music';
   }
   if (audioStatus) {
     audioStatus.textContent = isPreview && safeSettings.chimeEnabled
-      ? 'Sound is only available to guests on their invitation.' : '';
+      ? 'Music starts when a guest opens this invitation; browser playback may require an extra click.' : '';
   }
 }
 
@@ -183,6 +196,22 @@ function showMessage(target, text, isError = false) {
   target.className = isError ? 'message error' : 'message success';
 }
 
+function showToast(text) {
+  let toast = $('#invite-link-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'invite-link-toast';
+    toast.className = 'invite-link-toast';
+    toast.setAttribute('role', 'status');
+    toast.setAttribute('aria-live', 'polite');
+    document.body.append(toast);
+  }
+  toast.textContent = text;
+  toast.hidden = false;
+  window.clearTimeout(toast.hideTimer);
+  toast.hideTimer = window.setTimeout(() => { toast.hidden = true; }, 2800);
+}
+
 async function start() {
   if (token) return showGuest(token);
   const status = await api('/api/status');
@@ -229,6 +258,34 @@ async function openOutbox() {
   catch (error) { showMessage($('#global-message'), error.message, true); }
 }
 
+function openCreateEventForm() {
+  const section = $('#create-event');
+  section.hidden = false;
+  const title = $('#event-form [name=title]');
+  title.focus();
+  if (typeof section.scrollIntoView === 'function') {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function closeCreateEventForm() {
+  $('#create-event').hidden = true;
+  $('#event-form').reset();
+  $('#open-create-event').focus();
+}
+
+$('#open-create-event').addEventListener('click', openCreateEventForm);
+$('#create-event-toggle').addEventListener('click', openCreateEventForm);
+$('#cancel-create-event').addEventListener('click', closeCreateEventForm);
+$('#customize-invitation-toggle').addEventListener('click', () => {
+  const firstEvent = $('.event-card', $('#events'));
+  if (!firstEvent) {
+    showMessage($('#global-message'), 'Create an event before customizing its invitation.');
+    return;
+  }
+  $('.theme-toggle', firstEvent).click();
+});
+
 $('#event-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -237,6 +294,7 @@ $('#event-form').addEventListener('submit', async (event) => {
   try {
     await api('/api/events', { method: 'POST', body: JSON.stringify(data) });
     form.reset();
+    $('#create-event').hidden = true;
     await loadEvents();
   } catch (error) { showMessage($('#global-message'), error.message, true); }
 });
@@ -248,7 +306,13 @@ async function loadEvents() {
   if (!events.length) {
     const empty = document.createElement('section');
     empty.className = 'card muted';
-    empty.textContent = 'No events yet. Create one above to get started.';
+    const message = document.createElement('p');
+    message.textContent = 'No events yet. Create one to get started.';
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = 'Create your first event';
+    button.addEventListener('click', openCreateEventForm);
+    empty.append(message, button);
     container.append(empty);
     return;
   }
@@ -258,12 +322,12 @@ async function loadEvents() {
     card.innerHTML = `<div class="event-topbar"><p class="breadcrumb"><a href="#events">My events</a><span aria-hidden="true">/</span><span class="event-breadcrumb-title"></span></p><span class="local-event-tag">LOCAL EVENT</span></div><div class="event-heading"><div class="event-heading__copy"><div class="event-status"><span class="publication-status" role="status"></span><span class="response-state"></span></div><h2></h2><p class="event-meta"></p></div><div class="event-actions"><button class="publish">Publish event</button><button class="add secondary">Add guest unit</button><button class="toggle secondary"></button><button class="refresh secondary">Refresh</button></div></div><div class="stats" aria-live="polite"></div><section class="publish-next-steps notice" role="status" aria-labelledby="publish-next-steps-title" hidden><h3 id="publish-next-steps-title">Published locally — what next?</h3><p>Your event is ready in this local workspace. Create a guest unit to generate a private RSVP link. Its invitation is captured in the local outbox; no email is sent.</p><div class="row"><button type="button" class="next-steps-add">Create a guest unit</button><button type="button" class="secondary next-steps-outbox">Open local email outbox</button></div></section><section class="guest-panel" aria-labelledby="guest-list-title"><div class="guest-panel__head"><div><p class="section-kicker">INVITATIONS</p><h3 id="guest-list-title">Your guest list</h3><p class="muted">Guest units and replies stored in this local workspace only.</p></div></div><div class="guest-form-slot"></div><div class="guest-table"></div></section><div class="theme-editor">
       <button type="button" class="secondary theme-toggle" aria-expanded="false">Customize invitation</button>
       <section class="theme-panel" hidden>
-        <p class="help">Adjust how the invitation opens, its optional guest-activated chime, colors, font, and cover. Preview changes before saving.</p>
+        <p class="help">Adjust how the invitation opens, its optional background music, colors, font, and cover. Preview changes before saving.</p>
         <section class="invitation-settings" aria-labelledby="invitation-settings-title">
           <div class="invitation-settings__heading">
             <p class="section-kicker">GUEST EXPERIENCE</p>
             <h3 class="invitation-settings-title">How the invitation opens</h3>
-            <p class="help">Choose a direct card or a small envelope reveal. Guests can play the optional chime only when they choose.</p>
+            <p class="help">Choose how the card appears and add an optional visual accent. Optional background music starts as guests open the invitation.</p>
           </div>
           <div class="columns invitation-settings-controls">
             <label>Presentation
@@ -272,9 +336,23 @@ async function loadEvents() {
                 <option value="envelope">Animated envelope reveal</option>
               </select>
             </label>
+            <label>Reveal motion
+              <select class="invitation-reveal-motion" aria-label="Invitation reveal motion">
+                <option value="none">None</option>
+                <option value="fade">Fade</option>
+                <option value="slide-up">Slide up</option>
+              </select>
+            </label>
+            <label>Celebration accent
+              <select class="invitation-celebration" aria-label="Invitation celebration accent">
+                <option value="off">Off</option>
+                <option value="sparkle">Soft sparkle</option>
+                <option value="leaves">Falling leaves</option>
+              </select>
+            </label>
             <label class="invitation-chime-option">
               <input class="invitation-chime-enabled" type="checkbox">
-              Offer a gentle chime (guest-activated)
+              Play gentle background music when opened
             </label>
           </div>
           <button type="button" class="save-invitation-settings">Save invitation experience</button>
@@ -309,6 +387,28 @@ async function loadEvents() {
         <button type="button" class="save-theme">Save theme</button>
       </section>
     </div>`;
+      const themeEditor = $('.theme-editor', card);
+      const themeToggle = $('.theme-toggle', card);
+      $('.event-actions', card).append(themeToggle);
+      $('.stats', card).after(themeEditor);
+    const guestActions = document.createElement('div');
+    guestActions.className = 'guest-actions';
+    guestActions.setAttribute('role', 'group');
+    guestActions.setAttribute('aria-label', 'Add guests');
+    const addButton = $('.add', card);
+    addButton.setAttribute('aria-expanded', 'false');
+    addButton.addEventListener('click', () => toggleGuestComposer(event, card, 'single'));
+    guestActions.append(addButton);
+    const bulkButton = document.createElement('button');
+    bulkButton.type = 'button';
+    bulkButton.className = 'bulk-add secondary';
+    bulkButton.textContent = 'Bulk invite';
+    bulkButton.setAttribute('aria-expanded', 'false');
+    bulkButton.addEventListener('click', () => toggleGuestComposer(event, card, 'bulk'));
+    guestActions.append(bulkButton);
+    card.guestActionButtons = { single: addButton, bulk: bulkButton };
+    $('.publish', card).after(guestActions);
+    $('.guest-form-slot', card).hidden = true;
     $('.event-breadcrumb-title', card).textContent = event.title;
     $('h2', card).textContent = event.title;
     updatePublicationStatus(event, card);
@@ -348,7 +448,6 @@ async function loadEvents() {
       } catch (error) { showMessage($('#global-message'), error.message, true); }
     });
     $('.refresh', card).addEventListener('click', () => renderDashboard(event, card));
-    $('.add', card).addEventListener('click', () => showGuestForm(event, card));
     setupThemeEditor(event, card);
     container.append(card);
     await renderDashboard(event, card);
@@ -369,6 +468,8 @@ function setupThemeEditor(event, card) {
   const status = $('.theme-status', card);
   const save = $('.save-theme', card);
   const revealMode = $('.invitation-reveal-mode', card);
+  const revealMotion = $('.invitation-reveal-motion', card);
+  const celebration = $('.invitation-celebration', card);
   const chimeEnabled = $('.invitation-chime-enabled', card);
   const saveInvitation = $('.save-invitation-settings', card);
   const invitationStatus = $('.invitation-settings-status', card);
@@ -389,6 +490,8 @@ function setupThemeEditor(event, card) {
   const image = $('.invitation-cover', invitation);
   const syncInvitationFields = () => {
     revealMode.value = draftInvitationSettings.revealMode;
+    revealMotion.value = draftInvitationSettings.revealMotion;
+    celebration.value = draftInvitationSettings.celebration;
     chimeEnabled.checked = draftInvitationSettings.chimeEnabled;
     syncInvitationPresentation(invitation, draftInvitationSettings, true);
     previewRevealed = false;
@@ -442,10 +545,23 @@ function setupThemeEditor(event, card) {
   toggle.addEventListener('click', () => {
     panel.hidden = !panel.hidden;
     toggle.setAttribute('aria-expanded', String(!panel.hidden));
+    if (!panel.hidden && typeof panel.scrollIntoView === 'function') {
+      panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   });
   revealMode.addEventListener('change', () => {
     draftInvitationSettings.revealMode = revealMode.value === 'envelope' ? 'envelope' : 'direct';
     syncInvitationFields();
+    setInvitationStatus('');
+  });
+  revealMotion.addEventListener('change', () => {
+    draftInvitationSettings.revealMotion = revealMotion.value;
+    syncInvitationPresentation(invitation, draftInvitationSettings, true);
+    setInvitationStatus('');
+  });
+  celebration.addEventListener('change', () => {
+    draftInvitationSettings.celebration = celebration.value;
+    syncInvitationPresentation(invitation, draftInvitationSettings, true);
     setInvitationStatus('');
   });
   chimeEnabled.addEventListener('change', () => {
@@ -611,14 +727,42 @@ async function renderDashboard(event, card) {
   const tbody = $('tbody', table);
   for (const guest of guests) {
     const row = document.createElement('tr');
-    for (const value of [
-      guest.name, guest.email, guest.revokedAt ? 'Revoked' : guest.answer || 'No reply',
-      guest.partySize ?? '—'
+    for (const [label, value] of [
+      ['Guest unit', guest.name],
+      ['Email', guest.email],
+      ['Response', guest.revokedAt ? 'Revoked' : guest.answer || 'No reply'],
+      ['Party size', guest.partySize ?? '—']
     ]) {
-      const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+      const cell = document.createElement('td');
+      cell.setAttribute('data-label', label);
+      cell.textContent = value;
+      row.append(cell);
     }
     const action = document.createElement('td');
+    action.setAttribute('data-label', 'Actions');
     if (!guest.revokedAt) {
+      const linkButton = document.createElement('button');
+      linkButton.type = 'button';
+      linkButton.className = 'secondary guest-link-retention';
+      linkButton.textContent = 'Link';
+      linkButton.setAttribute('aria-label', `Copy invitation link for ${guest.name}`);
+      linkButton.addEventListener('click', async () => {
+        linkButton.disabled = true;
+        try {
+          const { inviteUrl } = await api(`/api/guests/${guest.id}/invite-link`);
+          const absoluteUrl = `${location.origin}${inviteUrl}`;
+          if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
+            throw new Error('Clipboard unavailable.');
+          }
+          await navigator.clipboard.writeText(absoluteUrl);
+          showToast(`${guest.name}'s invitation link copied.`);
+        } catch {
+          showToast(`Could not copy ${guest.name}'s link. Retrieve it from the local outbox.`);
+        } finally {
+          linkButton.disabled = false;
+        }
+      });
+      action.append(linkButton);
       const button = document.createElement('button');
       button.className = 'danger'; button.textContent = 'Revoke';
       button.addEventListener('click', async () => {
@@ -634,9 +778,90 @@ async function renderDashboard(event, card) {
   target.replaceChildren(table);
 }
 
+function createInviteLinkCollection(guests) {
+  const collection = document.createElement('div');
+  collection.className = 'invite-link-collection';
+  const message = document.createElement('p');
+  message.className = 'invite-link-collection__message';
+  message.textContent = guests.length === 1
+    ? 'Invitation created. The link is retained in the guest list.'
+    : `${guests.length} invitations created. Links are retained in the guest list.`;
+  const details = document.createElement('details');
+  details.className = 'invite-link-collection__details';
+  const summary = document.createElement('summary');
+  summary.textContent = guests.length === 1 ? 'View RSVP link' : `View ${guests.length} RSVP links`;
+  const list = document.createElement('ul');
+  list.className = 'invite-link-collection__list';
+  for (const guest of guests) {
+    const item = document.createElement('li');
+    const identity = document.createElement('span');
+    identity.className = 'invite-link-collection__identity';
+    const name = document.createElement('strong');
+    name.textContent = guest.name;
+    const email = document.createElement('span');
+    email.className = 'invite-link-collection__email';
+    email.textContent = guest.email;
+    identity.append(name, email);
+    const link = document.createElement('a');
+    link.href = `${location.origin}${guest.inviteUrl}`;
+    link.textContent = 'Open link';
+    link.className = 'invite-link-collection__url';
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'secondary';
+    copy.textContent = 'Copy';
+    copy.setAttribute('aria-label', `Copy RSVP link for ${guest.name}`);
+    const status = document.createElement('span');
+    status.className = 'invite-link-collection__status';
+    status.setAttribute('role', 'status');
+    copy.addEventListener('click', async () => {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard unavailable.');
+        await navigator.clipboard.writeText(link.href);
+        status.textContent = 'Copied.';
+      } catch {
+        status.textContent = 'Select the link and copy it manually.';
+      }
+    });
+    item.append(identity, link, copy, status);
+    list.append(item);
+  }
+  details.append(summary, list);
+  collection.append(message, details);
+  return collection;
+}
+
+function closeGuestComposer(card) {
+  const slot = $('.guest-form-slot', card);
+  const { single, bulk } = card.guestActionButtons;
+  const focusTarget = slot.composerMode === 'bulk' ? bulk : single;
+  slot.hidden = true;
+  slot.composerMode = null;
+  single.setAttribute('aria-expanded', 'false');
+  bulk.setAttribute('aria-expanded', 'false');
+  if (focusTarget) focusTarget.focus();
+}
+
+function toggleGuestComposer(event, card, mode) {
+  const slot = $('.guest-form-slot', card);
+  if (!slot.hidden && slot.composerMode === mode) {
+    closeGuestComposer(card);
+  } else if (mode === 'bulk') {
+    showBulkGuestForm(event, card);
+  } else {
+    showGuestForm(event, card);
+  }
+}
+
 function showGuestForm(event, card) {
   const slot = $('.guest-form-slot', card);
-  slot.innerHTML = `<form class="guest-form notice"><label>${event.guestMode === 'household' ? 'Household / group name' : 'Guest name'}<input name="name" maxlength="100" required></label><label>Guest email (synthetic only)<input name="email" type="email" maxlength="254" required></label>${event.guestMode === 'household' ? '<label>Maximum party size<input name="partyLimit" type="number" min="1" max="20" required></label>' : ''}<button>Create unit + capture invitation</button><div class="invite-result"></div></form>`;
+  const { single, bulk } = card.guestActionButtons;
+  slot.hidden = false;
+  slot.composerMode = 'single';
+  single.setAttribute('aria-expanded', 'true');
+  bulk.setAttribute('aria-expanded', 'false');
+  slot.innerHTML = `<form class="guest-form notice"><div class="guest-composer__heading"><strong>Single invite</strong><button type="button" class="secondary guest-composer-close">Close</button></div><label>${event.guestMode === 'household' ? 'Household / group name' : 'Guest name'}<input name="name" maxlength="100" required></label><label>Guest email (synthetic only)<input name="email" type="email" maxlength="254" required></label>${event.guestMode === 'household' ? '<label>Maximum party size<input name="partyLimit" type="number" min="1" max="20" required></label>' : ''}<button>Create unit + capture invitation</button><div class="invite-result" role="status" aria-live="polite"></div></form>`;
+  $('.guest-composer-close', slot).addEventListener('click', () => closeGuestComposer(card));
   const form = $('.guest-form', slot);
   form.querySelector('input[name="name"]').focus();
   form.addEventListener('submit', async (submitEvent) => {
@@ -648,18 +873,115 @@ function showGuestForm(event, card) {
       const created = await api(`/api/events/${event.id}/guests`, {
         method: 'POST', body: JSON.stringify(data)
       });
-      const link = document.createElement('a');
-      link.href = created.inviteUrl;
-      link.textContent = `${location.origin}${created.inviteUrl}`;
-      const result = document.createElement('p');
-      result.className = 'notice success';
-      result.append('Copy this private link for local testing: ', link);
-      $('.invite-result', slot).replaceChildren(result);
+      $('.invite-result', slot).replaceChildren(createInviteLinkCollection([{
+        name: data.name, email: data.email, inviteUrl: created.inviteUrl
+      }]));
       form.reset();
       await renderDashboard(event, card);
       await loadOutbox();
     } catch (error) {
       showMessage($('.invite-result', slot), error.message, true);
+    }
+  });
+}
+
+function parseBulkGuestRows(value, guestMode) {
+  const lines = String(value || '').split(/\r?\n/).filter((line) => line.trim());
+  if (!lines.length) return { rows: [], error: 'Paste at least one guest row.' };
+  if (lines.length > 100) return { rows: [], error: 'Bulk invites are limited to 100 rows at a time.' };
+  const expectedColumns = guestMode === 'household' ? 3 : 2;
+  const rows = lines.map((line, index) => {
+    const columns = line.split('\t').map((column) => column.trim());
+    const name = columns[0] || '';
+    const email = (columns[1] || '').toLowerCase();
+    const partyLimit = guestMode === 'household' ? Number(columns[2]) : 1;
+    const errors = [];
+    if (columns.length !== expectedColumns) {
+      errors.push(`Use ${expectedColumns} tab-separated columns.`);
+    }
+    if (!name || name.length > 100) errors.push('Name must be 1–100 characters.');
+    const domain = email.slice(email.lastIndexOf('@') + 1);
+    const reservedDomain = /^(?:[a-z0-9-]+\.)*(?:test|example|invalid|localhost)$|^(?:[a-z0-9-]+\.)?example\.(?:com|net|org)$/i.test(domain);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254 || !reservedDomain) {
+      errors.push('Use a synthetic email at a reserved test domain, such as name@example.test.');
+    }
+    if (guestMode === 'household' && (!Number.isInteger(partyLimit) || partyLimit < 1 || partyLimit > 20)) {
+      errors.push('Party limit must be a whole number from 1 to 20.');
+    }
+    return { rowNumber: index + 1, name, email, partyLimit, error: errors.join(' ') };
+  });
+  return { rows };
+}
+
+function showBulkGuestForm(event, card) {
+  const slot = $('.guest-form-slot', card);
+  const { single, bulk } = card.guestActionButtons;
+  slot.hidden = false;
+  slot.composerMode = 'bulk';
+  single.setAttribute('aria-expanded', 'false');
+  bulk.setAttribute('aria-expanded', 'true');
+  const isHousehold = event.guestMode === 'household';
+  const example = isHousehold
+    ? 'Sample Household\thousehold@example.test\t4'
+    : 'Sample Guest\tguest@example.test';
+  const columns = isHousehold ? 'name, synthetic email, party limit' : 'name, synthetic email';
+  slot.innerHTML = `<form class="bulk-guest-form notice"><div class="guest-composer__heading"><strong>Bulk invite</strong><button type="button" class="secondary guest-composer-close">Close</button></div><label>Paste guest list<textarea class="bulk-guest-rows" rows="7" spellcheck="false" placeholder="${example}" aria-describedby="bulk-guest-help"></textarea></label><p id="bulk-guest-help" class="help">Paste tab-separated rows copied from a spreadsheet, with no header: ${columns}. Up to 100 rows. Invitations are captured locally; no email is sent.</p><button type="button" class="secondary bulk-review">Review rows</button><ol class="bulk-preview" aria-live="polite"></ol><div class="bulk-result" role="status" aria-live="polite"></div><button type="submit" class="bulk-create" disabled>Create invitations</button></form>`;
+  $('.guest-composer-close', slot).addEventListener('click', () => closeGuestComposer(card));
+  const form = $('.bulk-guest-form', slot);
+  const textarea = $('.bulk-guest-rows', form);
+  const review = $('.bulk-review', form);
+  const preview = $('.bulk-preview', form);
+  const result = $('.bulk-result', form);
+  const submit = $('.bulk-create', form);
+  let reviewedRows = [];
+  textarea.focus();
+  textarea.addEventListener('input', () => {
+    reviewedRows = [];
+    preview.replaceChildren();
+    result.textContent = 'Review the updated list before creating invitations.';
+    submit.disabled = true;
+  });
+  review.addEventListener('click', () => {
+    const parsed = parseBulkGuestRows(textarea.value, event.guestMode);
+    preview.replaceChildren();
+    reviewedRows = [];
+    if (parsed.error) {
+      result.textContent = parsed.error;
+      submit.disabled = true;
+      return;
+    }
+    let invalidCount = 0;
+    for (const row of parsed.rows) {
+      const item = document.createElement('li');
+      item.className = row.error ? 'invalid' : 'valid';
+      item.textContent = `Row ${row.rowNumber}: ${row.name || '(missing name)'} — ${row.email || '(missing email)'} — ${row.error || 'Ready'}`;
+      preview.append(item);
+      if (row.error) invalidCount += 1;
+    }
+    if (!invalidCount) reviewedRows = parsed.rows.map(({ name, email, partyLimit }) => ({ name, email, partyLimit }));
+    result.textContent = invalidCount
+      ? `${invalidCount} row${invalidCount === 1 ? '' : 's'} need correction before invitations can be created.`
+      : `${parsed.rows.length} guest row${parsed.rows.length === 1 ? '' : 's'} ready to create.`;
+    submit.disabled = invalidCount > 0;
+    submit.textContent = `Create ${parsed.rows.length} invitation${parsed.rows.length === 1 ? '' : 's'}`;
+  });
+  form.addEventListener('submit', async (submitEvent) => {
+    submitEvent.preventDefault();
+    if (!reviewedRows.length) return;
+    submit.disabled = true;
+    try {
+      const created = await api(`/api/events/${event.id}/guests/bulk`, {
+        method: 'POST', body: JSON.stringify({ guests: reviewedRows })
+      });
+      result.replaceChildren(createInviteLinkCollection(created.guests));
+      form.reset();
+      reviewedRows = [];
+      preview.replaceChildren();
+      await renderDashboard(event, card);
+      await loadOutbox();
+    } catch (error) {
+      result.textContent = error.message;
+      submit.disabled = false;
     }
   });
 }
@@ -692,12 +1014,88 @@ async function showGuest(rsvpToken) {
     const guestTheme = applyTheme($('#guest'), normalizeTheme(data.event.theme || DEFAULT_THEME));
     setInvitationCover($('#guest-cover'), guestTheme);
     syncInvitationPresentation($('#guest'), invitationSettings);
+    let musicContext;
+    let musicTimer;
+    let musicStarting = false;
+    const stopInvitationMusic = () => {
+      if (musicTimer !== undefined) window.clearInterval(musicTimer);
+      musicTimer = undefined;
+      if (musicContext && typeof musicContext.close === 'function') {
+        musicContext.close().catch(() => {});
+      }
+      musicContext = undefined;
+    };
+    const startInvitationMusic = async (hasUserGesture = false) => {
+      if (!invitationSettings.chimeEnabled || musicStarting || musicContext) return;
+      const audioControl = $('.guest-audio-control');
+      const button = $('#guest-chime');
+      const status = $('#guest-audio-status');
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      button.disabled = true;
+      status.textContent = '';
+      musicStarting = true;
+      try {
+        if (!AudioContextClass) throw new Error('Audio is unavailable.');
+        const context = new AudioContextClass();
+        musicContext = context;
+        const resume = context.resume();
+        let resumeTimer;
+        const resumed = hasUserGesture ? await resume : await Promise.race([
+          resume.then(() => true),
+          new Promise((resolve) => {
+            resumeTimer = window.setTimeout(() => resolve(false), 800);
+          })
+        ]);
+        if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
+        if (resumed === false) throw new Error('Audio playback is blocked.');
+        if (context.state && context.state !== 'running') throw new Error('Audio is blocked.');
+        const chords = [
+          [261.63, 329.63, 392], [220, 261.63, 329.63],
+          [174.61, 220, 261.63], [196, 246.94, 293.66]
+        ];
+        let chordIndex = 0;
+        const playChord = () => {
+          const now = context.currentTime;
+          for (const frequency of chords[chordIndex]) {
+            const oscillator = context.createOscillator();
+            const gain = context.createGain();
+            oscillator.type = 'sine';
+            oscillator.frequency.setValueAtTime(frequency, now);
+            gain.gain.setValueAtTime(0.0001, now);
+            gain.gain.exponentialRampToValueAtTime(0.012, now + 0.4);
+            gain.gain.exponentialRampToValueAtTime(0.0001, now + 3.6);
+            oscillator.connect(gain);
+            gain.connect(context.destination);
+            oscillator.start(now);
+            oscillator.stop(now + 3.8);
+          }
+          chordIndex = (chordIndex + 1) % chords.length;
+        };
+        playChord();
+        musicTimer = window.setInterval(playChord, 3800);
+        status.textContent = 'Background music is playing.';
+        audioControl.hidden = true;
+      } catch {
+        stopInvitationMusic();
+        status.textContent = 'Background music could not start automatically. Use the button below to try again.';
+        button.textContent = 'Play gentle background music';
+        button.hidden = false;
+        button.disabled = false;
+        audioControl.hidden = false;
+      } finally {
+        musicStarting = false;
+      }
+    };
+    $('#guest-chime').addEventListener('click', () => startInvitationMusic(true));
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener('pagehide', stopInvitationMusic, { once: true });
+    }
     $('#guest-envelope').addEventListener('click', () => {
+      const musicAttempt = startInvitationMusic(true);
       const envelope = $('#guest-envelope');
       const reveal = () => {
         envelope.hidden = true;
         $('#guest-content').hidden = false;
-        $('#guest-content').classList.add('is-revealing');
         if (typeof $('#guest-title').focus === 'function') {
           $('#guest-title').setAttribute('tabindex', '-1');
           $('#guest-title').focus();
@@ -711,47 +1109,9 @@ async function showGuest(rsvpToken) {
         envelope.classList.add('is-opening');
         window.setTimeout(reveal, 300);
       }
+      return musicAttempt;
     });
-    $('#guest-chime').addEventListener('click', async (event) => {
-      const button = event.currentTarget;
-      const status = $('#guest-audio-status');
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextClass) {
-        status.textContent = 'Audio playback is not available in this browser.';
-        return;
-      }
-      button.disabled = true;
-      status.textContent = '';
-      let context;
-      try {
-        context = new AudioContextClass();
-        await context.resume();
-        const now = context.currentTime;
-        const notes = [{ at: 0, frequency: 659.25 }, { at: 0.2, frequency: 783.99 }];
-        for (const note of notes) {
-          const oscillator = context.createOscillator();
-          const gain = context.createGain();
-          oscillator.type = 'sine';
-          oscillator.frequency.setValueAtTime(note.frequency, now + note.at);
-          gain.gain.setValueAtTime(0.0001, now + note.at);
-          gain.gain.exponentialRampToValueAtTime(0.075, now + note.at + 0.035);
-          gain.gain.exponentialRampToValueAtTime(0.0001, now + note.at + 0.58);
-          oscillator.connect(gain);
-          gain.connect(context.destination);
-          oscillator.start(now + note.at);
-          oscillator.stop(now + note.at + 0.6);
-        }
-        status.textContent = 'A gentle chime is playing.';
-        window.setTimeout(() => {
-          button.disabled = false;
-          if (context && typeof context.close === 'function') context.close().catch(() => {});
-        }, 700);
-      } catch {
-        status.textContent = 'The chime could not be played. Please check your browser audio settings.';
-        button.disabled = false;
-        if (context && typeof context.close === 'function') context.close().catch(() => {});
-      }
-    });
+    if (invitationSettings.revealMode !== 'envelope') void startInvitationMusic();
     $('#guest-greeting').textContent = `An invitation for ${data.guest.name}`;
     $('#guest-title').textContent = data.event.title;
     $('#guest-details').textContent = 'We’d be delighted if you can join us.';

@@ -9,12 +9,14 @@ It uses Node.js built-ins and SQLite; there are no external services or dependen
 - Event creation with individual or household/group RSVP mode.
 - Draft/published event status and a host publish control.
 - Unique, revocable bearer links; household party limits are checked by the server.
+- Hosts can paste up to 100 tab-separated guest rows at once; each RSVP link and local outbox message is created atomically after validation. A single invalid row rejects the entire batch.
+- Hosts can retrieve a previously generated guest invite link via `GET /api/guests/:id/invite-link` (404 for unknown/other-host guests, 410 if revoked).
 - Guests can submit or revise yes/no/maybe and party size.
 - Server-enforced deadline closure and explicit host reopen/close.
 - Dashboard counts reflect the latest persisted RSVP, including attending people.
 - Invitation email content goes to a SQLite-backed local outbox. Nothing is sent.
 - Event themes persist in SQLite with classic defaults, owner-only updates, and theme data in authenticated event and guest invitation reads. Optional PNG, JPEG, or WebP base64 cover images are limited to 1 MiB decoded; no image is uploaded to a cloud service.
-- Invitation presentation settings persist per event with owner-only updates. The default is direct reveal with the optional built-in chime disabled.
+- Invitation presentation settings persist per event with owner-only updates. The default is direct reveal with reveal motion `none`, celebration `off`, and the optional built-in chime disabled. Reveal motion accepts `none`, `fade`, or `slide-up`; celebration accepts `off`, `sparkle`, or `leaves`. Falling leaves and sparkle are decorative and disabled for visitors who prefer reduced motion. The chime setting only enables a built-in generated chime; no uploaded or third-party audio is used by this backend contract.
 - Relational records persist in SQLite behind `persistence.js`.
 
 The host API accepts a complete theme object at `PUT /api/events/:id/theme`:
@@ -26,10 +28,11 @@ and blocks saving when this requirement is not met; the API enforces the same ru
 Older saved themes that do not meet the threshold are displayed with a readable text-color
 fallback, and the host editor can save that corrected color back to the event.
 
-The host API accepts exactly `{ "revealMode": "envelope" | "direct", "chimeEnabled": boolean }`
+The host API accepts exactly `{ "revealMode": "envelope" | "direct", "chimeEnabled": boolean, "revealMotion": "none" | "fade" | "slide-up", "celebration": "off" | "sparkle" | "leaves" }`
 at `PUT /api/events/:id/invitation`. The current `invitationSettings` object is returned in
-event list/detail and public guest invitation responses. The chime setting only enables a
-built-in generated chime; no uploaded or third-party audio is used by this backend contract.
+event list/detail and public guest invitation responses. Falling leaves are decorative and
+disabled for visitors who prefer reduced motion. The chime setting only enables a built-in
+generated chime; no uploaded or third-party audio is used by this backend contract.
 
 ## Safety and limitations
 

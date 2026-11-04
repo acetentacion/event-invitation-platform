@@ -168,6 +168,39 @@ test('deadline closes by default; only a post-deadline host reopen restores RSVP
   assert.equal(guestView.canRespond, false);
 });
 
+test('bulk guest creation validates every row before capturing any invitations', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const invalidBatch = await f.jsonRequest(`/api/events/${event.id}/guests/bulk`, 'POST', {
+    guests: [
+      { name: 'Valid Household', email: 'valid@example.test', partyLimit: 3 },
+      { name: 'Invalid Household', email: 'person@gmail.com', partyLimit: 2 }
+    ]
+  }, cookie);
+  assert.equal(invalidBatch.status, 400);
+  assert.match((await invalidBatch.json()).error, /Guest row 2/);
+  assert.equal((await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json()).guests.length, 0);
+  assert.equal((await (await f.request('/api/outbox', {}, cookie)).json()).messages.length, 0);
+
+  const created = await f.jsonRequest(`/api/events/${event.id}/guests/bulk`, 'POST', {
+    guests: [
+      { name: 'North Household', email: 'north@example.test', partyLimit: 3 },
+      { name: 'South Household', email: 'south@example.test', partyLimit: 4 }
+    ]
+  }, cookie);
+  assert.equal(created.status, 201);
+  const result = await created.json();
+  assert.equal(result.guests.length, 2);
+  assert.match(result.guests[0].inviteUrl, /^\/rsvp\/[A-Za-z0-9_-]{30,60}$/);
+  assert.notEqual(result.guests[0].inviteUrl, result.guests[1].inviteUrl);
+  assert.deepEqual(result.guests.map((guest) => guest.partyLimit), [3, 4]);
+  assert.equal((await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json()).guests.length, 2);
+  const outbox = await (await f.request('/api/outbox', {}, cookie)).json();
+  assert.equal(outbox.messages.length, 2);
+  assert.ok(outbox.messages.every((message) => message.body.includes('Local email capture only')));
+});
+
 test('validates input, isolates host ownership, and revokes guest links', async (t) => {
   const f = await fixture(t);
   const cookie = await f.register();
@@ -191,6 +224,9 @@ test('validates input, isolates host ownership, and revokes guest links', async 
 
   const guestId = individualGuest.guest.id;
   const token = individualGuest.inviteUrl.split('/').pop();
+  const retainedLink = await f.request(`/api/guests/${guestId}/invite-link`, {}, cookie);
+  assert.equal(retainedLink.status, 200);
+  assert.deepEqual(await retainedLink.json(), { inviteUrl: individualGuest.inviteUrl });
   const invalidParty = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
     answer: 'yes', partySize: 2
   });
@@ -205,10 +241,12 @@ test('validates input, isolates host ownership, and revokes guest links', async 
   });
   const otherCookie = secondLogin.headers.get('set-cookie').split(';', 1)[0];
   assert.equal((await f.jsonRequest(`/api/events/${event.id}/dashboard`, 'GET', undefined, otherCookie)).status, 404);
+  assert.equal((await f.request(`/api/guests/${guestId}/invite-link`, {}, otherCookie)).status, 404);
   assert.equal((await f.jsonRequest(`/api/guests/${guestId}/revoke`, 'POST', {}, otherCookie)).status, 404);
 
   const revoked = await f.jsonRequest(`/api/guests/${guestId}/revoke`, 'POST', {}, cookie);
   assert.equal(revoked.status, 200);
+  assert.equal((await f.request(`/api/guests/${guestId}/invite-link`, {}, cookie)).status, 410);
   assert.equal((await f.request(`/api/guest/${token}`)).status, 404);
 
   const logout = await f.jsonRequest('/api/auth/logout', 'POST', {}, cookie);
@@ -336,7 +374,9 @@ test('persists owner-only invitation presentation settings for hosts and guests'
   const f = await fixture(t);
   const cookie = await f.register();
   const event = await createEvent(f, cookie);
-  const defaults = { revealMode: 'direct', chimeEnabled: false };
+  const defaults = {
+    revealMode: 'direct', chimeEnabled: false, revealMotion: 'none', celebration: 'off'
+  };
 
   assert.deepEqual(event.invitationSettings, defaults);
   assert.deepEqual(
@@ -356,7 +396,9 @@ test('persists owner-only invitation presentation settings for hosts and guests'
   const invite = await guestResult.json();
   const token = invite.inviteUrl.split('/').pop();
 
-  const settings = { revealMode: 'envelope', chimeEnabled: true };
+  const settings = {
+    revealMode: 'envelope', chimeEnabled: true, revealMotion: 'fade', celebration: 'leaves'
+  };
   const updated = await f.jsonRequest(
     `/api/events/${event.id}/invitation`, 'PUT', settings, cookie
   );
@@ -376,11 +418,13 @@ test('persists owner-only invitation presentation settings for hosts and guests'
   );
 
   const invalidSettings = [
-    { revealMode: 'window', chimeEnabled: false },
-    { revealMode: 'direct', chimeEnabled: 'true' },
-    { revealMode: 'envelope', chimeEnabled: true, extra: true },
-    { revealMode: 'direct' },
-    { revealMode: 'direct', chimeEnabled: false, extra: null }
+    { ...settings, revealMode: 'window' },
+    { ...settings, chimeEnabled: 'true' },
+    { ...settings, revealMotion: 'bounce' },
+    { ...settings, celebration: 'confetti' },
+    { ...settings, extra: true },
+    { revealMode: 'direct', chimeEnabled: false, revealMotion: 'none' },
+    { ...defaults, extra: null }
   ];
   for (const invalid of invalidSettings) {
     assert.equal(

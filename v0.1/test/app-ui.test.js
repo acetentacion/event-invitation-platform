@@ -17,7 +17,12 @@ class FakeElement {
     this.style = { setProperty() {} };
     this.attributes = {};
     this.classList = {
-      add: (value) => { this.className = `${this.className} ${value}`.trim(); },
+      add: (value) => {
+        if (!this.classList.contains(value)) this.className = `${this.className} ${value}`.trim();
+      },
+      remove: (...values) => {
+        this.className = this.className.split(/\s+/).filter((name) => !values.includes(name)).join(' ');
+      },
       contains: (value) => this.className.split(/\s+/).includes(value)
     };
   }
@@ -26,8 +31,19 @@ class FakeElement {
     this.listeners.set(name, callback);
   }
 
+  click() { this.listeners.get('click')?.(); }
+
   querySelector(selector) {
-    return this.parts && this.parts[selector];
+    if (selector === '.guest-composer-close' && this.className === 'guest-form-slot') {
+      const activeForm = this.composerMode === 'bulk' ? this.parts['.bulk-guest-form'] : this.parts['.guest-form'];
+      return activeForm && activeForm.parts[selector];
+    }
+    if (this.parts && this.parts[selector]) return this.parts[selector];
+    if (selector.startsWith('.')) {
+      const className = selector.slice(1);
+      return this.children.find((child) => child.className.split(/\s+/).includes(className));
+    }
+    return undefined;
   }
 
   querySelectorAll() { return []; }
@@ -50,6 +66,9 @@ class FakeElement {
     this.children.push(...elements);
   }
 
+  after(...elements) { this.afterElements = elements; }
+  scrollIntoView() { this.scrolledIntoView = true; }
+
   replaceChildren(...elements) {
     this.children = elements;
     this.parts = {};
@@ -68,13 +87,31 @@ class FakeElement {
 
   set innerHTML(value) {
     this.html = value;
+    if (this.tagName === 'table') {
+      this.parts = { tbody: new FakeElement() };
+      return;
+    }
     if (this.className === 'guest-form-slot') {
       const form = new FakeElement();
       const inviteResult = new FakeElement();
-      this.parts = { '.guest-form': form, '.invite-result': inviteResult };
+      const bulkForm = new FakeElement();
+      bulkForm.parts = {
+        '.bulk-guest-rows': new FakeElement(),
+        '.bulk-review': new FakeElement(),
+        '.bulk-preview': new FakeElement(),
+        '.bulk-result': new FakeElement(),
+        '.bulk-create': new FakeElement(),
+        '.guest-composer-close': new FakeElement()
+      };
+      this.parts = {
+        '.guest-form': form,
+        '.invite-result': inviteResult,
+        '.bulk-guest-form': bulkForm
+      };
       form.parts = {
         'input[name="name"]': new FakeElement(),
-        '.invite-result': inviteResult
+        '.invite-result': inviteResult,
+        '.guest-composer-close': new FakeElement()
       };
       return;
     }
@@ -82,15 +119,16 @@ class FakeElement {
     this.parts = {};
     for (const selector of [
       'h2', '.event-breadcrumb-title', '.response-state', '.publication-status',
-      '.event-meta', '.stats', '.publish',
-      '.add', '.toggle', '.refresh', '.guest-form-slot', '.guest-table',
+      '.event-meta', '.stats', '.event-actions', '.publish',
+      '.add', '.bulk-add', '.guest-actions', '.toggle', '.refresh', '.guest-form-slot', '.guest-table',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font', '.theme-image',
       '.invitation-preview', '.theme-status', '.save-theme',
       '.remove-cover', '.contrast-warning', '.invitation-reveal-mode',
+      '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
-      '.invitation-settings-status', '.invitation-settings-title',
+      '.invitation-settings-status', '.invitation-settings-title', '.theme-editor',
       '.invitation-settings', '.preview-reveal-toggle'
     ]) {
       this.parts[selector] = new FakeElement();
@@ -108,11 +146,14 @@ test('event cards publish drafts and refresh to published state', async () => {
   };
   const document = {
     querySelector: getElement,
-    createElement: () => new FakeElement()
+    createElement: (tagName) => Object.assign(new FakeElement(), { tagName })
   };
   getElement('#guest').className = 'invitation-card';
   getElement('#outbox').hidden = true;
+  getElement('#create-event').hidden = true;
   const calls = [];
+  let copiedInviteLink = '';
+  let dashboardGuests = [];
   let published = false;
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
@@ -133,11 +174,23 @@ test('event cards publish drafts and refresh to published state', async () => {
         }]
       };
     } else if (url === '/api/events/7/dashboard') {
-      data = { guests: [] };
+      data = { guests: dashboardGuests };
     } else if (url === '/api/outbox') {
       data = { messages: [] };
     } else if (url === '/api/events/7/guests' && options.method === 'POST') {
       data = { guest: { id: 8 }, inviteUrl: '/rsvp/synthetic-private-token' };
+    } else if (url === '/api/events/7/guests/bulk' && options.method === 'POST') {
+      const guests = JSON.parse(options.body).guests.map((guest, index) => ({
+          ...guest,
+          id: index + 10,
+          inviteUrl: `/rsvp/synthetic-bulk-token-${index + 1}`
+        }));
+      dashboardGuests = guests.map((guest) => ({
+        ...guest, revokedAt: null, answer: null, partySize: null, updatedAt: null
+      }));
+      data = { guests };
+    } else if (/^\/api\/guests\/\d+\/invite-link$/.test(url)) {
+      data = { inviteUrl: '/rsvp/synthetic-bulk-token-1' };
     } else if (url === '/api/events/7/publish' && options.method === 'POST') {
       published = true;
       data = { event: { id: 7, published: true } };
@@ -154,15 +207,34 @@ test('event cards publish drafts and refresh to published state', async () => {
     document,
     location: { pathname: '/', origin: 'http://localhost' },
     fetch,
+    navigator: { clipboard: { writeText: async (value) => { copiedInviteLink = value; } } },
+    window: { clearTimeout() {}, setTimeout: () => 1 },
     FormData: class { entries() { return []; } },
     console
   });
+
+  assert.equal(getElement('#create-event').hidden, true, 'create form starts hidden');
+  getElement('#open-create-event').listeners.get('click')();
+  assert.equal(getElement('#create-event').hidden, false, 'header action opens the form');
+  assert.equal(getElement('#event-form [name=title]').focused, true, 'opening focuses the event name');
+  getElement('#cancel-create-event').listeners.get('click')();
+  assert.equal(getElement('#create-event').hidden, true, 'cancel closes the form');
 
   const events = getElement('#events');
   for (let attempt = 0; attempt < 20 && events.children.length === 0; attempt += 1) {
     await new Promise((resolve) => setImmediate(resolve));
   }
   let card = events.children[0];
+  assert.ok(card.parts['.event-actions'].children.includes(card.parts['.theme-toggle']), 'customize action is in the event header');
+  assert.deepEqual(card.parts['.stats'].afterElements, [card.parts['.theme-editor']], 'editor is before the guest list');
+  const guestActions = card.parts['.publish'].afterElements[0];
+  assert.equal(guestActions.attributes['aria-label'], 'Add guests');
+  assert.deepEqual(guestActions.children, [card.guestActionButtons.single, card.guestActionButtons.bulk]);
+  getElement('#customize-invitation-toggle').listeners.get('click')();
+  assert.equal(card.parts['.theme-panel'].hidden, false, 'sidebar shortcut opens the first event editor');
+  assert.equal(card.parts['.theme-panel'].scrolledIntoView, true, 'opened settings are brought into view');
+  card.parts['.theme-toggle'].listeners.get('click')();
+  assert.equal(card.parts['.theme-panel'].hidden, true, 'event-header action closes the editor');
   const previewCard = card.parts['.invitation-preview'].querySelector('.invitation-card');
   assert.equal(previewCard.parts['#guest-capacity'].textContent, 'You can include up to 4 people in your reply.');
   assert.equal(previewCard.parts['.guest-content'].hidden, false);
@@ -194,6 +266,18 @@ test('event cards publish drafts and refresh to published state', async () => {
   const chimeEnabled = card.parts['.invitation-chime-enabled'];
   chimeEnabled.checked = true;
   chimeEnabled.listeners.get('change')();
+  const revealMotion = card.parts['.invitation-reveal-motion'];
+  revealMotion.value = 'slide-up';
+  revealMotion.listeners.get('change')();
+  const celebration = card.parts['.invitation-celebration'];
+  celebration.value = 'sparkle';
+  celebration.listeners.get('change')();
+  assert.ok(previewCard.parts['.guest-content'].classList.contains('reveal-motion-slide-up'));
+  assert.ok(previewCard.classList.contains('has-celebration'));
+  celebration.value = 'leaves';
+  celebration.listeners.get('change')();
+  assert.ok(previewCard.classList.contains('has-falling-leaves'));
+  assert.equal(previewCard.classList.contains('has-celebration'), false);
   assert.equal(previewCard.parts['.guest-content'].hidden, true);
   assert.equal(previewCard.parts['.reveal-envelope'].hidden, false);
   assert.equal(previewCard.parts['.guest-audio-control'].hidden, false);
@@ -209,7 +293,7 @@ test('event cards publish drafts and refresh to published state', async () => {
   const invitationCall = calls.find((call) => call.url === '/api/events/7/invitation');
   assert.equal(invitationCall.options.method, 'PUT');
   assert.deepEqual(JSON.parse(invitationCall.options.body), {
-    revealMode: 'envelope', chimeEnabled: true
+    revealMode: 'envelope', chimeEnabled: true, revealMotion: 'slide-up', celebration: 'leaves'
   });
 
   await card.parts['.publish'].listeners.get('click')();
@@ -226,89 +310,208 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.match(card.html, /private RSVP link/);
   assert.match(card.html, /local outbox; no email is sent/i);
   await card.parts['.next-steps-add'].listeners.get('click')();
+  const guestSlot = card.parts['.guest-form-slot'];
+  assert.equal(guestSlot.hidden, false);
+  assert.equal(card.guestActionButtons.single.attributes['aria-expanded'], 'true');
   assert.match(card.parts['.guest-form-slot'].html, /Create unit \+ capture invitation/);
-  const guestForm = card.parts['.guest-form-slot'].parts['.guest-form'];
+  card.guestActionButtons.single.listeners.get('click')();
+  assert.equal(guestSlot.hidden, true, 'single invite toggle closes its form');
+  card.guestActionButtons.single.listeners.get('click')();
+  assert.equal(guestSlot.hidden, false, 'single invite toggle reopens its form');
+  let guestForm = card.parts['.guest-form-slot'].parts['.guest-form'];
   assert.equal(guestForm.parts['input[name="name"]'].focused, true);
+  guestForm.parts['.guest-composer-close'].listeners.get('click')();
+  assert.equal(guestSlot.hidden, true, 'single invite form can be closed');
+  await card.parts['.next-steps-add'].listeners.get('click')();
+  guestForm = card.parts['.guest-form-slot'].parts['.guest-form'];
   await guestForm.listeners.get('submit')({ preventDefault() {}, currentTarget: guestForm });
   const invitationResult = guestForm.parts['.invite-result'].children[0];
-  assert.equal(invitationResult.children[1].href, '/rsvp/synthetic-private-token');
-  assert.match(invitationResult.children[1].textContent, /http:\/\/localhost\/rsvp\/synthetic-private-token/);
+  const singleLinks = invitationResult.children[1];
+  assert.match(invitationResult.children[0].textContent, /Invitation created/);
+  assert.equal(singleLinks.children[0].textContent, 'View RSVP link');
+  assert.notEqual(singleLinks.open, true, 'single invite link starts collapsed');
+  const singleLink = singleLinks.children[1].children[0].children[1];
+  assert.equal(singleLink.href, 'http://localhost/rsvp/synthetic-private-token');
+  assert.equal(singleLink.textContent, 'Open link');
   await card.parts['.next-steps-outbox'].listeners.get('click')();
   assert.equal(getElement('#outbox').hidden, false);
   assert.ok(calls.some((call) => call.url === '/api/outbox'));
   assert.equal(calls.filter((call) => call.url === '/api/events').length, 2);
+
+  const bulkButton = card.guestActionButtons.bulk;
+  assert.ok(bulkButton, 'host can open the bulk invite form');
+  bulkButton.listeners.get('click')();
+  assert.equal(guestSlot.hidden, false, 'bulk invite opens the shared composer');
+  assert.equal(card.guestActionButtons.bulk.attributes['aria-expanded'], 'true');
+  assert.equal(card.guestActionButtons.single.attributes['aria-expanded'], 'false');
+  const bulkForm = card.parts['.guest-form-slot'].parts['.bulk-guest-form'];
+  bulkButton.listeners.get('click')();
+  assert.equal(guestSlot.hidden, true, 'bulk invite toggle closes its form');
+  bulkButton.listeners.get('click')();
+  assert.equal(guestSlot.hidden, false, 'bulk invite toggle reopens its form');
+  const reopenedBulkFormFromToggle = card.parts['.guest-form-slot'].parts['.bulk-guest-form'];
+  assert.notEqual(reopenedBulkFormFromToggle, bulkForm);
+  const activeFormForClose = reopenedBulkFormFromToggle;
+  activeFormForClose.parts['.guest-composer-close'].listeners.get('click')();
+  assert.equal(guestSlot.hidden, true, 'bulk invite form can be closed');
+  bulkButton.listeners.get('click')();
+  const activeBulkForm = card.parts['.guest-form-slot'].parts['.bulk-guest-form'];
+  assert.notEqual(activeBulkForm, activeFormForClose, 'reopening prepares a fresh bulk form');
+  const bulkRows = activeBulkForm.parts['.bulk-guest-rows'];
+  const bulkReview = activeBulkForm.parts['.bulk-review'];
+  const bulkPreview = activeBulkForm.parts['.bulk-preview'];
+  const bulkResult = activeBulkForm.parts['.bulk-result'];
+  const bulkSubmit = activeBulkForm.parts['.bulk-create'];
+  bulkRows.value = 'Invalid Household\tperson@gmail.com\t3';
+  bulkReview.listeners.get('click')();
+  assert.equal(bulkSubmit.disabled, true, 'invalid rows cannot be submitted');
+  assert.match(bulkPreview.children[0].textContent, /reserved test domain/);
+  bulkRows.value = 'North Household\tnorth@example.test\t3\nSouth Household\tsouth@example.test\t4';
+  bulkReview.listeners.get('click')();
+  assert.equal(bulkSubmit.disabled, false);
+  assert.equal(bulkPreview.children.length, 2);
+  await activeBulkForm.listeners.get('submit')({ preventDefault() {}, currentTarget: activeBulkForm });
+  const bulkCall = calls.find((call) => call.url === '/api/events/7/guests/bulk');
+  assert.deepEqual(JSON.parse(bulkCall.options.body), {
+    guests: [
+      { name: 'North Household', email: 'north@example.test', partyLimit: 3 },
+      { name: 'South Household', email: 'south@example.test', partyLimit: 4 }
+    ]
+  });
+  const bulkCollection = bulkResult.children[0];
+  const bulkLinks = bulkCollection.children[1];
+  assert.match(bulkCollection.children[0].textContent, /2 invitations created/);
+  assert.equal(bulkLinks.children[0].textContent, 'View 2 RSVP links');
+  assert.notEqual(bulkLinks.open, true, 'bulk invite links start collapsed');
+  assert.equal(bulkLinks.children[1].children.length, 2, 'every guest receives a retained private link');
+  assert.ok(bulkLinks.children[1].children.every((item) => item.children[1].href.startsWith('http://localhost/rsvp/')));
+  const firstGuestRow = card.parts['.guest-table'].children[0].parts.tbody.children[0];
+  const actionCell = firstGuestRow.children[4];
+  const retainedLink = actionCell.children[0];
+  await retainedLink.listeners.get('click')();
+  assert.equal(copiedInviteLink, 'http://localhost/rsvp/synthetic-bulk-token-1');
+  assert.equal(retainedLink.textContent, 'Link');
+  assert.equal(actionCell.children.length, 2, 'link button and revoke action remain compact');
+  assert.equal(getElement('#invite-link-toast').textContent, 'North Household\'s invitation link copied.');
+  assert.equal(actionCell.children.some((element) => element.tagName === 'a'), false, 'the URL is not shown in the guest list');
 });
 
-test('envelope guest flow reveals on activation and only plays chime on explicit activation', async () => {
+test('guest invitation starts configured music on open and offers retry only when blocked', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
-  const elements = new Map();
-  const getElement = (selector) => {
-    if (!elements.has(selector)) elements.set(selector, new FakeElement());
-    return elements.get(selector);
-  };
-  getElement('#guest').parts = {
-    '.reveal-envelope': getElement('#guest-envelope'),
-    '.guest-content': getElement('#guest-content'),
-    '.guest-audio-control': getElement('.guest-audio-control'),
-    '.guest-chime-control': getElement('#guest-chime'),
-    '.guest-audio-status': getElement('#guest-audio-status')
-  };
-  getElement('#rsvp-form').elements = {
-    answer: Object.assign(new FakeElement(), { value: '' }),
-    partySize: Object.assign(new FakeElement(), { value: '' })
-  };
-  let audioContexts = 0;
-  const audioContext = {
-    currentTime: 0,
-    destination: {},
-    resume: async () => {},
-    createOscillator: () => ({
-      type: '',
-      frequency: { setValueAtTime() {} },
-      connect() {}, start() {}, stop() {}
-    }),
-    createGain: () => ({
-      gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
-      connect() {}
-    }),
-    close: async () => {}
-  };
-  class TestAudioContext {
-    constructor() { audioContexts += 1; return audioContext; }
-  }
-  const fetch = async () => ({
-    ok: true,
-    json: async () => ({
-      canRespond: true,
-      event: {
-        title: 'A garden gathering', eventDate: '2035-06-15',
-        invitationSettings: { revealMode: 'envelope', chimeEnabled: true }
-      },
-      guest: { name: 'Sample Guest', partyLimit: 1 }
-    })
-  });
-  vm.runInNewContext(source, {
-    document: { querySelector: getElement, createElement: () => new FakeElement() },
-    location: { pathname: '/rsvp/synthetic-token', origin: 'http://localhost' },
-    fetch, FormData: class {}, console,
-    window: { AudioContext: TestAudioContext, setTimeout: (callback) => callback() }
-  });
-  for (let attempt = 0; attempt < 20 &&
-      getElement('#guest-title').textContent !== 'A garden gathering'; attempt += 1) {
-    await new Promise((resolve) => setImmediate(resolve));
+  async function loadGuest(revealMode, blocked = false) {
+    const elements = new Map();
+    const getElement = (selector) => {
+      if (!elements.has(selector)) elements.set(selector, new FakeElement());
+      return elements.get(selector);
+    };
+    getElement('#guest').parts = {
+      '.reveal-envelope': getElement('#guest-envelope'),
+      '.guest-content': getElement('#guest-content'),
+      '.guest-audio-control': getElement('.guest-audio-control'),
+      '.guest-chime-control': getElement('#guest-chime'),
+      '.guest-audio-status': getElement('#guest-audio-status')
+    };
+    getElement('#rsvp-form').elements = {
+      answer: Object.assign(new FakeElement(), { value: '' }),
+      partySize: Object.assign(new FakeElement(), { value: '' })
+    };
+    let audioContexts = 0;
+    let oscillatorStarts = 0;
+    class TestAudioContext {
+      constructor() {
+        audioContexts += 1;
+        this.currentTime = 0;
+        this.destination = {};
+        this.state = 'suspended';
+      }
+      async resume() {
+        if (blocked && revealMode === 'direct') return new Promise(() => {});
+        if (blocked) throw new Error('Playback blocked');
+        this.state = 'running';
+      }
+      createOscillator() {
+        return {
+          type: '',
+          frequency: { setValueAtTime() {} },
+          connect() {}, start() { oscillatorStarts += 1; }, stop() {}
+        };
+      }
+      createGain() {
+        return {
+          gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} },
+          connect() {}
+        };
+      }
+      async close() {}
+    }
+    const fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        canRespond: true,
+        event: {
+          title: 'A garden gathering', eventDate: '2035-06-15',
+          invitationSettings: {
+            revealMode, chimeEnabled: true, revealMotion: 'slide-up', celebration: 'leaves'
+          }
+        },
+        guest: { name: 'Sample Guest', partyLimit: 1 }
+      })
+    });
+    vm.runInNewContext(source, {
+      document: { querySelector: getElement, createElement: () => new FakeElement() },
+      location: { pathname: '/rsvp/synthetic-token', origin: 'http://localhost' },
+      fetch, FormData: class {}, console,
+      window: {
+        AudioContext: TestAudioContext,
+        setTimeout: (callback, delay) => {
+          if (delay !== 800 || (blocked && revealMode === 'direct')) callback();
+          return 1;
+        },
+        clearTimeout() {},
+        setInterval: () => 1,
+        clearInterval() {}
+      }
+    });
+    for (let attempt = 0; attempt < 20 &&
+        getElement('#guest-title').textContent !== 'A garden gathering'; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    return {
+      getElement,
+      get audioContexts() { return audioContexts; },
+      get oscillatorStarts() { return oscillatorStarts; }
+    };
   }
 
-  assert.equal(getElement('#guest-envelope').hidden, false);
-  assert.equal(getElement('#guest-content').hidden, true);
-  assert.equal(getElement('#guest-chime').hidden, false);
-  assert.equal(audioContexts, 0, 'loading the invitation must not create or play audio');
-  getElement('#guest-envelope').listeners.get('click')();
-  assert.equal(getElement('#guest-envelope').hidden, true);
-  assert.equal(getElement('#guest-content').hidden, false);
-  assert.equal(getElement('#guest-title').focused, true);
-  await getElement('#guest-chime').listeners.get('click')({ currentTarget: getElement('#guest-chime') });
-  assert.equal(audioContexts, 1);
-  assert.match(getElement('#guest-audio-status').textContent, /gentle chime is playing/i);
+  const guest = await loadGuest('envelope');
+  assert.ok(guest.getElement('#guest-content').classList.contains('reveal-motion-slide-up'));
+  assert.ok(guest.getElement('#guest').classList.contains('has-falling-leaves'));
+  assert.equal(guest.getElement('#guest-envelope').hidden, false);
+  assert.equal(guest.getElement('#guest-content').hidden, true);
+  assert.equal(guest.audioContexts, 0, 'envelope music waits for the guest open gesture');
+  await guest.getElement('#guest-envelope').listeners.get('click')();
+  assert.equal(guest.getElement('#guest-envelope').hidden, true);
+  assert.equal(guest.getElement('#guest-content').hidden, false);
+  assert.equal(guest.getElement('#guest-title').focused, true);
+  assert.equal(guest.audioContexts, 1);
+  assert.equal(guest.oscillatorStarts, 3, 'the opening gesture starts the music chord');
+  assert.equal(guest.getElement('.guest-audio-control').hidden, true);
+  assert.match(guest.getElement('#guest-audio-status').textContent, /background music is playing/i);
+
+  const blockedGuest = await loadGuest('envelope', true);
+  await blockedGuest.getElement('#guest-envelope').listeners.get('click')();
+  assert.equal(blockedGuest.getElement('.guest-audio-control').hidden, false);
+  assert.equal(blockedGuest.getElement('#guest-chime').hidden, false);
+  assert.match(blockedGuest.getElement('#guest-audio-status').textContent, /could not start automatically/i);
+
+  const directGuest = await loadGuest('direct');
+  assert.equal(directGuest.audioContexts, 1, 'direct invitations attempt music as they load');
+  assert.equal(directGuest.oscillatorStarts, 3);
+
+  const blockedDirectGuest = await loadGuest('direct', true);
+  assert.equal(blockedDirectGuest.getElement('.guest-audio-control').hidden, false);
+  assert.equal(blockedDirectGuest.getElement('#guest-chime').hidden, false);
+  assert.match(blockedDirectGuest.getElement('#guest-audio-status').textContent, /could not start automatically/i);
 });
 
 test('invalid or revoked guest links hide the RSVP form', async () => {

@@ -65,13 +65,24 @@ test('persists and reads event invitation settings', () => {
       guestMode: 'individual',
       rsvpDeadline: null
     }, '2026-01-01'));
-    const settings = { revealMode: 'envelope', chimeEnabled: true };
+    const settings = {
+      revealMode: 'envelope', chimeEnabled: true, revealMotion: 'slide-up', celebration: 'sparkle'
+    };
 
     assert.deepEqual(store.getEventForHost(eventId, hostId).invitationSettings, DEFAULT_INVITATION_SETTINGS);
     assert.equal(store.updateEventInvitationSettings(eventId, hostId, settings), 1);
     assert.deepEqual(store.getEventForHost(eventId, hostId).invitationSettings, settings);
     assert.deepEqual(store.listEvents(hostId)[0].invitationSettings, settings);
+    const leafSettings = { ...settings, celebration: 'leaves' };
+    assert.equal(store.updateEventInvitationSettings(eventId, hostId, leafSettings), 1);
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationSettings, leafSettings);
     assert.equal(store.updateEventInvitationSettings(eventId, hostId + 1, DEFAULT_INVITATION_SETTINGS), 0);
+
+    store.db.prepare('UPDATE events SET invitation_settings_json = ? WHERE id = ?')
+      .run(JSON.stringify({ revealMode: 'envelope', chimeEnabled: true }), eventId);
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationSettings, {
+      ...DEFAULT_INVITATION_SETTINGS, revealMode: 'envelope', chimeEnabled: true
+    });
   } finally {
     store.close();
   }

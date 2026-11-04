@@ -15,21 +15,30 @@ const DEFAULT_THEME = Object.freeze({
 
 const DEFAULT_INVITATION_SETTINGS = Object.freeze({
   revealMode: 'direct',
-  chimeEnabled: false
+  chimeEnabled: false,
+  revealMotion: 'none',
+  celebration: 'off'
 });
 
 function storedInvitationSettings(value) {
   try {
     const settings = JSON.parse(value);
+    const keys = settings && typeof settings === 'object' && !Array.isArray(settings)
+      ? Object.keys(settings).sort() : [];
+    const isLegacy = keys.join(',') === 'chimeEnabled,revealMode';
+    const isCurrent = keys.join(',') === 'celebration,chimeEnabled,revealMode,revealMotion';
     if (settings && typeof settings === 'object' && !Array.isArray(settings) &&
-        Object.keys(settings).length === 2 &&
-        Object.hasOwn(settings, 'revealMode') &&
-        Object.hasOwn(settings, 'chimeEnabled') &&
+        (isLegacy || isCurrent) &&
         ['envelope', 'direct'].includes(settings.revealMode) &&
-        typeof settings.chimeEnabled === 'boolean') {
+        typeof settings.chimeEnabled === 'boolean' &&
+        (!isCurrent ||
+          (['none', 'fade', 'slide-up'].includes(settings.revealMotion) &&
+           ['off', 'sparkle', 'leaves'].includes(settings.celebration)))) {
       return {
         revealMode: settings.revealMode,
-        chimeEnabled: settings.chimeEnabled
+        chimeEnabled: settings.chimeEnabled,
+        revealMotion: isCurrent ? settings.revealMotion : DEFAULT_INVITATION_SETTINGS.revealMotion,
+        celebration: isCurrent ? settings.celebration : DEFAULT_INVITATION_SETTINGS.celebration
       };
     }
   } catch {
@@ -279,17 +288,27 @@ class Store {
   }
 
   createGuestAndOutbox(guest, message, createdAt) {
+    return this.createGuestsAndOutbox([{ guest, message, createdAt }])[0];
+  }
+
+  createGuestsAndOutbox(entries) {
     return this.transaction(() => {
-      const inserted = this.db.prepare(
+      const insertGuest = this.db.prepare(
         `INSERT INTO guest_units (event_id, name, email, party_limit, token_hash, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(guest.eventId, guest.name, guest.email, guest.partyLimit, guest.tokenHash, createdAt);
-      const id = Number(inserted.lastInsertRowid);
-      this.db.prepare(
+      );
+      const insertOutbox = this.db.prepare(
         `INSERT INTO email_outbox (guest_unit_id, recipient, subject, body, created_at)
          VALUES (?, ?, ?, ?, ?)`
-      ).run(id, message.recipient, message.subject, message.body, createdAt);
-      return id;
+      );
+      return entries.map(({ guest, message, createdAt }) => {
+        const inserted = insertGuest.run(
+          guest.eventId, guest.name, guest.email, guest.partyLimit, guest.tokenHash, createdAt
+        );
+        const id = Number(inserted.lastInsertRowid);
+        insertOutbox.run(id, message.recipient, message.subject, message.body, createdAt);
+        return id;
+      });
     });
   }
 
@@ -311,6 +330,17 @@ class Store {
          SELECT 1 FROM events WHERE events.id = guest_units.event_id AND events.host_id = ?
        )`
     ).run(revokedAt, guestId, hostId).changes;
+  }
+
+  guestInviteLink(guestId, hostId) {
+    return this.db.prepare(
+      `SELECT g.revoked_at AS revokedAt, o.body
+       FROM guest_units g
+       JOIN events e ON e.id = g.event_id
+       JOIN email_outbox o ON o.guest_unit_id = g.id
+       WHERE g.id = ? AND e.host_id = ?
+       ORDER BY o.created_at DESC LIMIT 1`
+    ).get(guestId, hostId);
   }
 
   setEventOpen(eventId, hostId, open, updatedAt) {

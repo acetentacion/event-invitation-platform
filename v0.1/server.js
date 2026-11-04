@@ -14,6 +14,8 @@ const DEFAULT_DB = path.join(ROOT, 'data', 'gatherly.sqlite');
 const COOKIE = 'gatherly_session';
 const SESSION_MS = 7 * 24 * 60 * 60 * 1000;
 const BODY_LIMIT = 16 * 1024;
+const GUEST_BATCH_BODY_LIMIT = 64 * 1024;
+const GUEST_BATCH_LIMIT = 100;
 const THEME_BODY_LIMIT = 1536 * 1024;
 const THEME_IMAGE_LIMIT = 1024 * 1024;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -200,11 +202,11 @@ function validateTheme(input) {
 }
 
 function validateInvitationSettings(input) {
-  const keys = ['revealMode', 'chimeEnabled'];
+  const keys = ['revealMode', 'chimeEnabled', 'revealMotion', 'celebration'];
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
       Object.keys(input).length !== keys.length ||
       keys.some((key) => !Object.hasOwn(input, key))) {
-    throw invalid('Invitation settings must contain exactly revealMode and chimeEnabled.');
+    throw invalid('Invitation settings must contain exactly revealMode, chimeEnabled, revealMotion, and celebration.');
   }
   if (!['envelope', 'direct'].includes(input.revealMode)) {
     throw invalid('Choose envelope or direct for revealMode.');
@@ -212,9 +214,17 @@ function validateInvitationSettings(input) {
   if (typeof input.chimeEnabled !== 'boolean') {
     throw invalid('chimeEnabled must be true or false.');
   }
+  if (!['none', 'fade', 'slide-up'].includes(input.revealMotion)) {
+    throw invalid('Choose none, fade, or slide-up for revealMotion.');
+  }
+  if (!['off', 'sparkle', 'leaves'].includes(input.celebration)) {
+    throw invalid('Choose off, sparkle, or leaves for celebration.');
+  }
   return {
     revealMode: input.revealMode,
-    chimeEnabled: input.chimeEnabled
+    chimeEnabled: input.chimeEnabled,
+    revealMotion: input.revealMotion,
+    celebration: input.celebration
   };
 }
 
@@ -482,7 +492,7 @@ function createApp(options = {}) {
         return json(res, 200, { messages: store.listOutbox(hostRecord.id) });
       }
 
-      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests|dashboard|responses|publish|theme|invitation))?$/);
+      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests(?:\/bulk)?|dashboard|responses|publish|theme|invitation))?$/);
       if (eventMatch) {
         const eventId = Number(eventMatch[1]);
         if (!Number.isSafeInteger(eventId) || eventId < 1) throw invalid('Event not found.', 404);
@@ -542,6 +552,50 @@ function createApp(options = {}) {
             inviteUrl
           });
         }
+        if (method === 'POST' && action === 'guests/bulk') {
+          const input = await bodyJson(req, GUEST_BATCH_BODY_LIMIT);
+          if (!Array.isArray(input.guests) || input.guests.length < 1 || input.guests.length > GUEST_BATCH_LIMIT) {
+            throw invalid(`Provide between 1 and ${GUEST_BATCH_LIMIT} guest rows.`);
+          }
+          const entries = input.guests.map((row, index) => {
+            const rowNumber = index + 1;
+            if (!row || typeof row !== 'object' || Array.isArray(row)) {
+              throw invalid(`Guest row ${rowNumber} must be an object.`);
+            }
+            const name = typeof row.name === 'string' ? row.name.trim() : '';
+            const email = typeof row.email === 'string' ? row.email.trim().toLowerCase() : '';
+            if (!name || name.length > 100) {
+              throw invalid(`Guest row ${rowNumber}: name must be 1–100 characters.`);
+            }
+            if (!validSyntheticEmail(email)) {
+              throw invalid(`Guest row ${rowNumber}: use a synthetic email at a reserved test domain, such as name@example.test.`);
+            }
+            const partyLimit = event.guestMode === 'individual' ? 1 : row.partyLimit;
+            if (!Number.isInteger(partyLimit) || partyLimit < 1 || partyLimit > 20) {
+              throw invalid(`Guest row ${rowNumber}: party limit must be a whole number from 1 to 20.`);
+            }
+            const token = crypto.randomBytes(32).toString('base64url');
+            const inviteUrl = `/rsvp/${token}`;
+            const guest = { eventId, name, email, partyLimit, tokenHash: sha256(token) };
+            return {
+              guest,
+              inviteUrl,
+              createdAt: currentIso(),
+              message: {
+                recipient: email,
+                subject: `Your invitation: ${event.title}`,
+                body: `Hello ${name},\n\nYou are invited to ${event.title} on ${event.eventDate}.\nRSVP using your private local link: ${inviteUrl}\n\nLocal email capture only. No email was sent.`
+              }
+            };
+          });
+          const ids = store.createGuestsAndOutbox(entries);
+          return json(res, 201, {
+            guests: entries.map(({ guest, inviteUrl }, index) => ({
+              id: ids[index], name: guest.name, email: guest.email,
+              partyLimit: guest.partyLimit, inviteUrl
+            }))
+          });
+        }
         if (method === 'POST' && action === 'publish') {
           store.publishEvent(eventId, hostRecord.id);
           return json(res, 200, {
@@ -559,6 +613,19 @@ function createApp(options = {}) {
             event: eventDetail(updated, hostRecord.id)
           });
         }
+      }
+
+      const inviteLinkMatch = pathname.match(/^\/api\/guests\/(\d+)\/invite-link$/);
+      if (method === 'GET' && inviteLinkMatch) {
+        const guestId = Number(inviteLinkMatch[1]);
+        const record = Number.isSafeInteger(guestId) && guestId > 0
+          ? store.guestInviteLink(guestId, hostRecord.id)
+          : null;
+        if (!record) throw invalid('Guest not found.', 404);
+        if (record.revokedAt) throw invalid('Invite link has been revoked.', 410);
+        const match = record.body.match(/RSVP using your private local link:\s*(\/rsvp\/[A-Za-z0-9_-]{30,60})/);
+        if (!match) throw invalid('Invite link is unavailable.', 404);
+        return json(res, 200, { inviteUrl: match[1] });
       }
 
       const revokeMatch = pathname.match(/^\/api\/guests\/(\d+)\/revoke$/);

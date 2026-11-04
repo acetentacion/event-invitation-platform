@@ -19,7 +19,15 @@ class FakeElement {
     this.textContent = '';
     this.className = '';
     this.attributes = {};
-    this.classList = { contains: () => false };
+    this.classList = {
+      contains: (value) => this.className.split(/\s+/).includes(value),
+      add: (value) => {
+        if (!this.classList.contains(value)) this.className = `${this.className} ${value}`.trim();
+      },
+      remove: (...values) => {
+        this.className = this.className.split(/\s+/).filter((name) => !values.includes(name)).join(' ');
+      }
+    };
   }
 
   addEventListener(name, callback) { this.listeners.set(name, callback); }
@@ -30,6 +38,7 @@ class FakeElement {
       if (element && element.className === 'invitation-card') this.parts = { '.invitation-card': element };
     }
   }
+  after(...elements) { this.afterElements = elements; }
   replaceChildren(...elements) {
     this.children = elements;
     this.parts = {};
@@ -72,13 +81,14 @@ class FakeElement {
     this.parts = {};
     for (const selector of [
       'h2', '.event-breadcrumb-title', '.response-state', '.publication-status',
-      '.event-meta', '.stats', '.publish',
+      '.event-meta', '.stats', '.event-actions', '.publish',
       '.add', '.toggle', '.refresh', '.guest-form-slot', '.guest-table',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font', '.theme-image',
       '.invitation-preview', '.theme-status', '.save-theme',
       '.remove-cover', '.contrast-warning', '.preview-reveal-toggle', '.invitation-reveal-mode',
+      '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
       '.invitation-settings-status', '.invitation-settings-title',
       '.invitation-settings'
