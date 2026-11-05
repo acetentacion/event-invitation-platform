@@ -330,7 +330,9 @@ function createApp(options = {}) {
       updatedAt: guest.updatedAt || null,
       attendees: store.attendeesForGuest(Number(guest.id))
     }));
+  }
 
+  function eventDetail(event, hostId) {
     return {
       ...publicEvent(event, hostId),
       guests: dashboardGuests(event.id, hostId)
