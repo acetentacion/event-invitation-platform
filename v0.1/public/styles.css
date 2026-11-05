@@ -1155,12 +1155,35 @@ tbody tr:hover { background: #f8f7f2; }
 }
 .workspace-brand .brand__mark { width: 25px; height: 25px; font-size: 18px; }
 .workspace-label {
-  margin: 0 0 10px 9px;
-  color: #77786f;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: .12em;
-}
+    margin: 0 0 10px 9px;
+    color: #77786f;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .12em;
+  }
+  .event-switcher {
+    display: block;
+    margin: 12px 9px 0;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    color: #77786f;
+    text-transform: uppercase;
+  }
+  .event-switcher select {
+    width: 100%;
+    min-height: 36px;
+    margin-top: 5px;
+    padding: 0 9px;
+    color: #394735;
+    background: #fffefa;
+    border: 1px solid #eeece5;
+    border-radius: 2px;
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .event-switcher select:focus { outline: 3px solid #c7d3c6; }
 .workspace-nav { display: grid; gap: 4px; }
 .workspace-link {
   display: flex;
@@ -1261,12 +1284,12 @@ tbody tr:hover { background: #f8f7f2; }
   letter-spacing: .08em;
 }
 .event-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 20px 0 18px;
-}
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 18px;
+    padding: 20px 0 18px;
+  }
 .event-heading__copy { min-width: 0; }
 .event-status { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
 .publication-status {
@@ -1306,6 +1329,12 @@ tbody tr:hover { background: #f8f7f2; }
 .event-meta { margin: 0; color: #65665f; font-size: 12px; }
 .event-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .event-actions button { min-height: 36px; padding: 7px 10px; font-size: 11px; }
+.event-actions .guest-toggle { color: #394735; background: #f0f1eb; border-color: #d7d9cf; }
+.event-actions .guest-toggle:hover { color: #2f3d2c; background: #e7e9e0; border-color: #c6cbbb; }
+.guest-panel { transition: max-height 220ms ease, opacity 220ms ease; }
+.guest-panel[hidden] { display: none; }
+.guest-panel__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.guest-panel__head .guest-panel-toggle { min-height: 32px; padding: 6px 9px; font-size: 11px; }
 .guest-actions { display: inline-flex; align-items: center; gap: 0; padding: 2px; background: #f1f2eb; border: 1px solid #dfe4db; border-radius: 2px; }
 .guest-actions button { min-height: 30px; padding: 6px 9px; color: #244a42; background: transparent; border: 0; border-radius: 1px; font-size: 11px; }
 .guest-actions button + button { border-left: 1px solid #d3dbd1; }

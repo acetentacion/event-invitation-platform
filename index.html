@@ -107,7 +107,9 @@
             <aside class="dashboard__sidebar">
               <a class="dashboard__brand" href="#main"><span class="brand__mark">g</span> gatherly</a>
               <div class="sidebar-label">WORKSPACE</div>
-              <button class="side-link side-link--active" type="button"><span>▦</span> My events <b>1</b></button>
+              <div class="event-switcher">
+                <select id="event-switch" aria-label="Switch between events"></select>
+              </div>
               <button class="side-link" type="button"><span>✳</span> Design gallery</button>
               <div class="sidebar-spacer"></div>
               <div class="sidebar-profile"><span class="profile-avatar">S</span><span><b>Sam Rivera</b><small>Personal account</small></span><span class="profile-dots">···</span></div>
@@ -125,7 +127,7 @@
                 <div class="stat-card"><span>CAN'T MAKE IT</span><b id="declined-count">3</b><small>sent with love</small></div>
               </div>
               <div class="guest-panel">
-                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Fictional guest data, stored in this browser only.</p></div><div class="guest-panel__actions"><button class="button button--outline button--reset" id="reset-demo-button" type="button">Reset demo data</button><button class="button button--dark button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button></div></div>
+                <div class="guest-panel__head"><div><h4>Your guests</h4><p>Fictional guest data, stored in this browser only.</p></div><div class="guest-panel__actions"><button class="button button--outline button--reset" id="reset-demo-button" type="button">Reset demo data</button><button class="button button--outline button--add" id="add-guest-button" type="button"><span aria-hidden="true">＋</span> Add sample guest</button><button class="button button--dark button--event" id="add-event-button" type="button"><span aria-hidden="true">＋</span> New event</button></div></div>
                 <div class="guest-toolbar"><div class="filter-tabs" role="group" aria-label="Filter guests">
                   <button class="filter-tab filter-tab--active" type="button" data-filter="all" aria-pressed="true">Everyone <span id="filter-all-count">38</span></button>
                   <button class="filter-tab" type="button" data-filter="attending" aria-pressed="false">Attending</button>
@@ -148,11 +150,11 @@
             <div class="guest-invitation__eyebrow"><span aria-hidden="true">✳</span> YOU'RE INVITED</div>
             <p class="guest-invitation__overline">A garden party for</p>
             <h1 id="invitation-title">Amelia's<br><em>first trip</em><br>around the sun</h1>
-            <p class="guest-invitation__intro">Our little sunshine is turning one! Join us for a lovely afternoon in the garden with good food, sweet treats, and our favorite people.</p>
+            <p class="guest-invitation__intro" id="invitation-intro">Our little sunshine is turning one! Join us for a lovely afternoon in the garden with good food, sweet treats, and our favorite people.</p>
             <div class="guest-invitation__details">
-              <div><span class="invitation-detail__icon" aria-hidden="true">◷</span><span><b>Sunday, June 13, 2027</b><small>2:00–5:00 PM · Please reply by June 1</small></span></div>
-              <div><span class="invitation-detail__icon" aria-hidden="true">⌖</span><span><b>The Willow House</b><small>Portland, Oregon</small></span></div>
-              <div><span class="invitation-detail__icon" aria-hidden="true">♡</span><span><b>A little note</b><small>Garden party attire · Little ones welcome</small></span></div>
+              <div><span class="invitation-detail__icon" aria-hidden="true">◝</span><span><b id="invitation-date">Sunday, June 13, 2027</b><small id="invitation-rsvp-deadline">2:00–5:00 PM · Please reply by June 1</small></span></div>
+              <div><span class="invitation-detail__icon" aria-hidden="true">⌖</span><span><b id="invitation-location">The Willow House</b><small>Portland, Oregon</small></span></div>
+              <div><span class="invitation-detail__icon" aria-hidden="true">♡</span><span><b>A little note</b><small id="invitation-note">Garden party attire · Little ones welcome</small></span></div>
             </div>
             <div class="guest-invitation__rsvp">
               <div class="guest-invitation__rsvp-heading"><span class="section-kicker">KINDLY REPLY</span><h2>Will you be there?</h2><p>No account needed. Just let us know so we can save you a place.</p></div>
@@ -185,6 +187,19 @@
           <div class="form-row"><label class="form-field">Group<input name="group" type="text" maxlength="30" required autocomplete="off" placeholder="Friends"></label><label class="form-field">Party size<input name="party" type="number" min="1" max="20" value="1" required></label></div>
           <label class="form-field">Sample response<select name="status"><option value="pending">Awaiting reply</option><option value="attending">Attending</option><option value="declined">Declined</option></select></label>
           <div class="guest-dialog__actions"><button class="button button--outline" type="button" id="cancel-guest">Cancel</button><button class="button button--dark" type="submit">Add to demo</button></div>
+        </form>
+      </dialog>
+
+      <dialog class="guest-dialog" id="event-dialog" aria-labelledby="event-dialog-title">
+        <form id="event-form">
+          <div class="guest-dialog__head"><div><span class="section-kicker">LOCAL DEMO ONLY</span><h2 id="event-dialog-title">Create a new event</h2></div><button class="dialog-close" type="button" id="close-event-dialog" aria-label="Close">&times;</button></div>
+          <p>Give your event a name and details. Guests and RSVPs stay scoped to this event, in this browser.</p>
+          <label class="form-field">Event name<input name="name" type="text" maxlength="80" required autocomplete="off" placeholder="e.g. Sarah & Tom's wedding"></label>
+          <div class="form-row"><label class="form-field">Date &amp; time<input name="date" type="text" maxlength="60" required autocomplete="off" placeholder="e.g. Saturday, September 2, 2027 · 4:00 PM"></label><label class="form-field">RSVP deadline<input name="rsvpDeadline" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Please reply by August 5"></label></div>
+          <label class="form-field">Location<input name="location" type="text" maxlength="80" autocomplete="off" placeholder="e.g. The Greenhouse Barn · Hood River"></label>
+          <label class="form-field">Note<input name="note" type="text" maxlength="80" autocomplete="off" placeholder="e.g. Garden formal · Kids welcome"></label>
+          <label class="form-field">Intro<input name="intro" type="text" maxlength="160" autocomplete="off" placeholder="e.g. A short line guests see under the title"></label>
+          <div class="guest-dialog__actions"><button class="button button--outline" type="button" id="cancel-event">Cancel</button><button class="button button--dark" type="submit">Create event</button></div>
         </form>
       </dialog>
 

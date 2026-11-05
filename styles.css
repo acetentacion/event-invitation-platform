@@ -107,6 +107,9 @@ h1 em, h2 em { color: var(--green); font-weight: 500; }
 .side-link--active { background: #e9ede4; color: #465441; font-weight: 600; }
 .side-link b { margin-left: auto; font-size: 9px; font-weight: 500; }
 .sidebar-spacer { flex: 1; }
+.event-switcher { width: 100%; margin-bottom: 10px; }
+.event-switcher select { width: 100%; min-height: 36px; padding: 0 9px; border: 1px solid #e3e1d9; border-radius: 3px; background: #fff; color: #465441; font: inherit; font-size: 10px; cursor: pointer; }
+.event-switcher select:focus { border-color: #819076; outline: 3px solid rgba(105, 121, 99, .16); }
 .sidebar-profile { display: flex; align-items: center; gap: 8px; padding: 12px 0 0; border-top: 1px solid #e9e7e0; }
 .profile-avatar { display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: #f1d7c6; font-family: var(--serif); font-size: 13px; }
 .sidebar-profile b, .sidebar-profile small { display: block; }.sidebar-profile b { font-size: 9px; }.sidebar-profile small { color: #92928b; font-size: 8px; }
@@ -132,6 +135,7 @@ h1 em, h2 em { color: var(--green); font-weight: 500; }
 .guest-panel__head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .guest-panel__head h4 { margin: 0; font-family: var(--serif); font-size: 16px; font-weight: 500; }.guest-panel__head p { margin: 1px 0 0; color: #92928a; font-size: 8px; }
 .button--add { min-height: 32px; padding: 0 10px; gap: 5px; border-radius: 3px; font-size: 8px; }
+.button--event { min-height: 32px; padding: 0 10px; gap: 5px; border-radius: 3px; font-size: 8px; }
 .guest-toolbar { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; border-bottom: 1px solid #eeede8; }
 .filter-tabs { display: flex; align-items: center; gap: 14px; }
 .filter-tab { position: relative; padding: 0 0 8px; border: 0; background: none; color: #898981; cursor: pointer; font-size: 8px; }
@@ -328,6 +332,7 @@ body[data-view="invitation"] #guest-invitation { display: block; }
 
 @media (max-width: 900px) {
   .dashboard { grid-template-columns: 150px minmax(0, 1fr); }
+  .event-switcher select { font-size: 9px; }
   .dashboard__main { padding-inline: 14px; }
   .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .event-heading__actions { flex-wrap: wrap; justify-content: flex-end; }
