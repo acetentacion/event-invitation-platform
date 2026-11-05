@@ -327,11 +327,10 @@ function createApp(options = {}) {
       revokedAt: guest.revokedAt,
       answer: guest.answer || null,
       partySize: guest.partySize === null ? null : Number(guest.partySize),
-      updatedAt: guest.updatedAt || null
+      updatedAt: guest.updatedAt || null,
+      attendees: store.attendeesForGuest(Number(guest.id))
     }));
-  }
 
-  function eventDetail(event, hostId) {
     return {
       ...publicEvent(event, hostId),
       guests: dashboardGuests(event.id, hostId)
@@ -448,9 +447,10 @@ function createApp(options = {}) {
               name: record.name,
               partyLimit: Number(record.partyLimit),
               answer: record.answer || null,
-              partySize: record.partySize === null ? null : Number(record.partySize)
-            },
-            canRespond
+               partySize: record.partySize === null ? null : Number(record.partySize),
+               attendees: Array.isArray(record.attendees) ? record.attendees : []
+             },
+             canRespond
           });
         }
         if (!canRespond) throw invalid('RSVPs are closed. Please contact the host.', 409);
@@ -470,8 +470,20 @@ function createApp(options = {}) {
         if (record.guestMode === 'individual' && answer !== 'no' && input.partySize !== 1) {
           throw invalid('Individual RSVP party size must be 1.');
         }
-        store.saveRsvp(record.guestId, answer, input.partySize, currentIso());
-        return json(res, 200, { ok: true });
+         const attendees = Array.isArray(input.attendees) ? input.attendees : [];
+         if (input.attendees !== undefined && !Array.isArray(input.attendees)) throw invalid('Attendees must be an array.');
+         if (attendees.length > 20) throw invalid('Too many attendees.');
+         for (const attendee of attendees) {
+           if (!attendee || typeof attendee !== 'object' || Array.isArray(attendee)) throw invalid('Each attendee must be an object.');
+           if (attendee.name !== undefined && typeof attendee.name !== 'string') throw invalid('Attendee name must be text.');
+           if (attendee.dietary !== undefined && typeof attendee.dietary !== 'string') throw invalid('Attendee dietary must be text.');
+           if (attendee.accessibility !== undefined && typeof attendee.accessibility !== 'string') throw invalid('Attendee accessibility must be text.');
+           if (attendee.ageBand !== undefined && !['adult', 'child'].includes(attendee.ageBand)) throw invalid('Attendee age band must be adult or child.');
+         }
+         if (answer === 'no' && attendees.length !== 0) throw invalid('A no RSVP cannot include attendees.');
+         if (attendees.length > input.partySize) throw invalid('Attendees cannot exceed party size.');
+         store.saveRsvp(record.guestId, answer, input.partySize, currentIso(), attendees);
+         return json(res, 200, { ok: true });
       }
 
       const hostRecord = requireHost(req);

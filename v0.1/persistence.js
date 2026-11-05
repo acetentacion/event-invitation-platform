@@ -132,7 +132,16 @@ class Store {
         party_size INTEGER NOT NULL CHECK (party_size BETWEEN 0 AND 20),
         updated_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS email_outbox (
+      CREATE TABLE IF NOT EXISTS rsvp_attendees (
+         id INTEGER PRIMARY KEY,
+         guest_unit_id INTEGER NOT NULL REFERENCES guest_units(id) ON DELETE CASCADE,
+         name TEXT NOT NULL DEFAULT '',
+         dietary TEXT NOT NULL DEFAULT '',
+         accessibility TEXT NOT NULL DEFAULT '',
+         age_band TEXT NOT NULL DEFAULT 'adult' CHECK (age_band IN ('adult', 'child')),
+         created_at TEXT NOT NULL
+       );
+       CREATE TABLE IF NOT EXISTS email_outbox (
         id INTEGER PRIMARY KEY,
         guest_unit_id INTEGER NOT NULL REFERENCES guest_units(id) ON DELETE CASCADE,
         recipient TEXT NOT NULL,
@@ -165,6 +174,22 @@ class Store {
     }
     if (!guestColumns.some((column) => column.name === 'email')) {
       // Legacy schema without email; nothing to backfill safely.
+    }
+    const rsvpAttendeeTables = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='rsvp_attendees'"
+    ).all();
+    if (rsvpAttendeeTables.length === 0) {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS rsvp_attendees (
+          id INTEGER PRIMARY KEY,
+          guest_unit_id INTEGER NOT NULL REFERENCES guest_units(id) ON DELETE CASCADE,
+          name TEXT NOT NULL DEFAULT '',
+          dietary TEXT NOT NULL DEFAULT '',
+          accessibility TEXT NOT NULL DEFAULT '',
+          age_band TEXT NOT NULL DEFAULT 'adult' CHECK (age_band IN ('adult', 'child')),
+          created_at TEXT NOT NULL
+        );
+      `);
     }
   }
 
@@ -393,11 +418,12 @@ class Store {
     return {
       ...result,
       theme: storedTheme(guest.themeJson),
-      invitationSettings: storedInvitationSettings(invitationSettingsJson)
+      invitationSettings: storedInvitationSettings(invitationSettingsJson),
+      attendees: this.attendeesForGuest(guest.guestId)
     };
   }
 
-  saveRsvp(guestId, answer, partySize, updatedAt) {
+  saveRsvp(guestId, answer, partySize, updatedAt, attendees = []) {
     return this.transaction(() => {
       const guest = this.db.prepare(
         'SELECT id FROM guest_units WHERE id = ?'
@@ -414,8 +440,31 @@ class Store {
            answer = excluded.answer, party_size = excluded.party_size,
            updated_at = excluded.updated_at`
       ).run(guestId, answer, partySize, updatedAt);
+      // Replace attendee details for this guest unit.
+      this.db.prepare('DELETE FROM rsvp_attendees WHERE guest_unit_id = ?').run(guestId);
+      const insert = this.db.prepare(
+        `INSERT INTO rsvp_attendees (guest_unit_id, name, dietary, accessibility, age_band, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      for (const attendee of attendees) {
+        insert.run(
+          guestId,
+          String(attendee.name || '').trim().slice(0, 100),
+          String(attendee.dietary || '').trim().slice(0, 200),
+          String(attendee.accessibility || '').trim().slice(0, 200),
+          attendee.ageBand === 'child' ? 'child' : 'adult',
+          updatedAt
+        );
+      }
       return true;
     });
+  }
+
+  attendeesForGuest(guestId) {
+    return this.db.prepare(
+      `SELECT name, dietary, accessibility, age_band AS ageBand
+       FROM rsvp_attendees WHERE guest_unit_id = ? ORDER BY id`
+    ).all(guestId);
   }
 
   listOutbox(hostId) {

@@ -550,3 +550,92 @@ test('theme contrast is accepted exactly at the 4.5:1 boundary', async (t) => {
   }, cookie);
   assert.equal(below.status, 400);
 });
+
+test('RSVP stores and returns attendee details', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { guestMode: 'household' });
+
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Test Household', email: 'household@example.test', partyLimit: 4
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+
+  // Submit RSVP with attendees
+  const submit = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes',
+    partySize: 3,
+    attendees: [
+      { name: 'Alex Morgan', dietary: 'vegetarian', accessibility: '', ageBand: 'adult' },
+      { name: 'Sam Morgan', dietary: 'none', accessibility: 'wheelchair access', ageBand: 'child' }
+    ]
+  });
+  assert.equal(submit.status, 200);
+
+  // Fetch invitation detail and verify attendees are returned
+  const detail = await (await f.jsonRequest(`/api/guest/${token}`)).json();
+  assert.equal(detail.guest.answer, 'yes');
+  assert.equal(detail.guest.partySize, 3);
+  assert.equal(detail.guest.attendees.length, 2);
+  assert.equal(detail.guest.attendees[0].name, 'Alex Morgan');
+  assert.equal(detail.guest.attendees[0].dietary, 'vegetarian');
+  assert.equal(detail.guest.attendees[1].name, 'Sam Morgan');
+  assert.equal(detail.guest.attendees[1].ageBand, 'child');
+
+  // Dashboard also includes attendees
+  const dashboard = await (await f.jsonRequest(`/api/events/${event.id}/dashboard`, {}, cookie)).json();
+  const dashboardGuest = dashboard.guests.find((g) => g.id === guest.id);
+  assert.ok(dashboardGuest);
+  assert.equal(dashboardGuest.attendees.length, 2);
+});
+
+test('RSVP attendee validation rejects invalid input', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { guestMode: 'household' });
+
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Test Household', email: 'household@example.test', partyLimit: 4
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+
+  // Too many attendees (>20) rejected
+  const tooMany = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes',
+    partySize: 21,
+    attendees: Array.from({ length: 21 }, (_, i) => ({ name: `Person ${i}`, ageBand: 'adult' }))
+  });
+  assert.equal(tooMany.status, 400);
+
+  // Invalid age band rejected
+  const badAge = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes',
+    partySize: 2,
+    attendees: [{ name: 'Person', ageBand: 'infant' }]
+  });
+  assert.equal(badAge.status, 400);
+
+  // No RSVP with attendees rejected
+  const noWithAttendees = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'no',
+    partySize: 0,
+    attendees: [{ name: 'Person', ageBand: 'adult' }]
+  });
+  assert.equal(noWithAttendees.status, 400);
+
+  // Attendees exceed partySize rejected
+  const tooFewParty = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes',
+    partySize: 1,
+    attendees: [{ name: 'Person 1', ageBand: 'adult' }, { name: 'Person 2', ageBand: 'adult' }]
+  });
+  assert.equal(tooFewParty.status, 400);
+
+  // Valid attendee submission succeeds
+  const valid = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes',
+    partySize: 2,
+    attendees: [{ name: 'Valid Person', ageBand: 'adult' }]
+  });
+  assert.equal(valid.status, 200);
+});

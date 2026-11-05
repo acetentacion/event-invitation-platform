@@ -87,3 +87,120 @@ test('persists and reads event invitation settings', () => {
     store.close();
   }
 });
+
+test('saveRsvp stores and retrieves attendee details', () => {
+  const store = new Store(':memory:');
+  try {
+    const hostId = Number(store.createHost('host@example.test', 'hash', '2026-01-01'));
+    const eventId = Number(store.createEvent(hostId, {
+      title: 'Attendee test event',
+      eventDate: '2026-04-05',
+      location: '',
+      guestMode: 'household',
+      rsvpDeadline: null
+    }, '2026-01-01'));
+    const guestId = Number(store.createGuestAndOutbox({
+      eventId, name: 'Sample Household', email: 'household@example.test',
+      partyLimit: 4, groupName: '', tokenHash: 'abc123', inviteUrl: '/rsvp/abc123'
+    }, {
+      recipient: 'household@example.test',
+      subject: 'Your invitation',
+      body: 'You are invited.'
+    }, '2026-01-01'));
+
+    const updatedAt = '2026-01-05T10:00:00.000Z';
+    assert.equal(store.saveRsvp(guestId, 'yes', 3, updatedAt, [
+      { name: 'Alex Morgan', dietary: 'vegetarian', accessibility: '', ageBand: 'adult' },
+      { name: 'Sam Morgan', dietary: 'none', accessibility: 'wheelchair access', ageBand: 'child' },
+      { name: '', dietary: '', accessibility: '', ageBand: 'adult' }
+    ]), true);
+
+    const attendees = store.attendeesForGuest(guestId);
+    assert.equal(attendees.length, 3);
+    assert.equal(attendees[0].name, 'Alex Morgan');
+    assert.equal(attendees[0].dietary, 'vegetarian');
+    assert.equal(attendees[0].accessibility, '');
+    assert.equal(attendees[0].ageBand, 'adult');
+    assert.equal(attendees[1].name, 'Sam Morgan');
+    assert.equal(attendees[1].ageBand, 'child');
+    assert.equal(attendees[2].name, '');
+    assert.equal(attendees[2].ageBand, 'adult');
+  } finally {
+    store.close();
+  }
+});
+
+test('saveRsvp replaces existing attendees on update', () => {
+  const store = new Store(':memory:');
+  try {
+    const hostId = Number(store.createHost('host@example.test', 'hash', '2026-01-01'));
+    const eventId = Number(store.createEvent(hostId, {
+      title: 'Replace attendees event',
+      eventDate: '2026-04-05',
+      location: '',
+      guestMode: 'household',
+      rsvpDeadline: null
+    }, '2026-01-01'));
+    const guestId = Number(store.createGuestAndOutbox({
+      eventId, name: 'Sample Household', email: 'household@example.test',
+      partyLimit: 4, groupName: '', tokenHash: 'def456', inviteUrl: '/rsvp/def456'
+    }, {
+      recipient: 'household@example.test',
+      subject: 'Your invitation',
+      body: 'You are invited.'
+    }, '2026-01-01'));
+
+    store.saveRsvp(guestId, 'yes', 2, '2026-01-05T10:00:00.000Z', [
+      { name: 'First Person', dietary: '', accessibility: '', ageBand: 'adult' }
+    ]);
+    assert.equal(store.attendeesForGuest(guestId).length, 1);
+
+    store.saveRsvp(guestId, 'yes', 1, '2026-01-06T10:00:00.000Z', []);
+    assert.equal(store.attendeesForGuest(guestId).length, 0);
+
+    store.saveRsvp(guestId, 'yes', 2, '2026-01-07T10:00:00.000Z', [
+      { name: 'New Person', dietary: 'nut allergy', accessibility: '', ageBand: 'adult' }
+    ]);
+    const attendees = store.attendeesForGuest(guestId);
+    assert.equal(attendees.length, 1);
+    assert.equal(attendees[0].name, 'New Person');
+    assert.equal(attendees[0].dietary, 'nut allergy');
+  } finally {
+    store.close();
+  }
+});
+
+test('getGuestByToken includes attendees', () => {
+  const store = new Store(':memory:');
+  try {
+    const hostId = Number(store.createHost('host@example.test', 'hash', '2026-01-01'));
+    const eventId = Number(store.createEvent(hostId, {
+      title: 'Token attendee event',
+      eventDate: '2026-04-05',
+      location: '',
+      guestMode: 'household',
+      rsvpDeadline: null
+    }, '2026-01-01'));
+    const guestId = Number(store.createGuestAndOutbox({
+      eventId, name: 'Sample Household', email: 'household@example.test',
+      partyLimit: 4, groupName: '', tokenHash: 'token789', inviteUrl: '/rsvp/token789'
+    }, {
+      recipient: 'household@example.test',
+      subject: 'Your invitation',
+      body: 'You are invited.'
+    }, '2026-01-01'));
+
+    store.saveRsvp(guestId, 'yes', 2, '2026-01-05T10:00:00.000Z', [
+      { name: 'Guest One', dietary: '', accessibility: '', ageBand: 'adult' }
+    ]);
+
+    const record = store.getGuestByToken('token789');
+    assert.ok(record);
+    assert.equal(record.guestId, guestId);
+    assert.equal(record.answer, 'yes');
+    assert.equal(record.attendees.length, 1);
+    assert.equal(record.attendees[0].name, 'Guest One');
+  } finally {
+    store.close();
+  }
+});

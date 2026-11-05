@@ -17,7 +17,21 @@ Run the prototype from PowerShell with `Set-Location .\v0.1; npm start`; validat
 
 An Event Organizer domain review of Gatherly identified the minimum viable operational set needed before real-guest use: **attendee-level detail, event capacity cap, check-in/attendance, guest communication (reminders/updates/cancellation), and export/print**. These are captured as Milestone 1 (M1.1–M1.5) in the Engineering Manager task plan, with Milestones 2–4 for high/medium/low-priority items and cross-cutting impracticality fixes (C-1…C-5). The full to-do list with agent assignments lives in the Engineering Manager session output.
 
-Current working-tree note: an in-progress UI redesign (sidebar event-switcher, create-event button moved to top bar) is underway and has temporarily left 3 of 26 tests failing (`ui-style`, `theme-ui`, `app-ui`). These are tracked as blocker B-1 and are intentionally left uncommitted. The clean parts (new `agents/Event Organizer.md` and this state update) are committed separately.
+### Milestone 1.1 — Attendee-level detail (Backend — COMPLETED)
+
+Implemented in `v0.1/persistence.js` and `v0.1/server.js`:
+
+- **Schema:** New `rsvp_attendees` table (`id`, `guest_unit_id`, `name`, `dietary`, `accessibility`, `age_band`, `created_at`) with FK to `guest_units` ON DELETE CASCADE. Migration logic creates the table on existing databases.
+- **`saveRsvp()`** now accepts an optional `attendees` array, replaces existing attendee rows on update within a transaction.
+- **`attendeesForGuest(guestId)`** query method.
+- **`getGuestByToken()`** includes `attendees` array in the guest record.
+- **RSVP submit handler** validates: attendees array (max 20), age band (adult/child), no RSVP cannot include attendees, attendees count cannot exceed partySize.
+- **`dashboardGuests()`** includes `attendees` per guest unit.
+- Persistence tests: **5/5 pass**. API validation test: **passes**.
+
+Frontend (RSVP form attendee fields) and QA tests are spec'd but not yet implemented due to pre-existing uncommitted UI changes breaking `eventDetail` in `server.js`.
+
+Current working-tree note: an in-progress UI redesign (sidebar event-switcher, create-event button moved to top bar) is underway and has temporarily left 3 of 26 tests failing (`ui-style`, `theme-ui`, `app-ui`). These are tracked as blocker B-1 and are intentionally left uncommitted. Additionally, the uncommitted changes removed the `eventDetail` function, breaking several API read paths. The clean parts (new `agents/Event Organizer.md` and this state update) are committed separately.
 
 ### Agent roster (updated)
 Six agents in `agents/`: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer. `.github/agents/` mirrors the first five.
