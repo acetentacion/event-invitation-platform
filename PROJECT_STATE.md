@@ -1,6 +1,6 @@
 # Gatherly project state
 
-**Last updated:** 2026-11-04 (Asia/Manila)  
+**Last updated:** 2026-11-05 (Asia/Manila)  
 **Purpose:** Durable project handoff for future sessions. Update this file when scope, decisions, implementation, or validation changes.
 
 ## Current handoff snapshot (2026-11-04)
@@ -9,9 +9,18 @@ The project files and latest work are saved in this workspace. The latest implem
 
 To continue with another coding assistant, open this folder and have it read this file first, then [`v0.1/README.md`](./v0.1/README.md) before changing the prototype. The key latest implementation is in `v0.1/public/app.js`, `v0.1/public/index.html`, `v0.1/public/styles.css`, `v0.1/server.js`, and `v0.1/persistence.js`; tests are in `v0.1/test/`.
 
-This workspace is a Git repository on branch `main` with remote `origin` at `https://github.com/acetentacion/event-invitation-platform.git`. The working tree has been pushed; see the commit history for the latest changes including the `.github/agents/` directory with agent definitions (Backend Developer, DevOps Engineer, Engineering Manager, Frontend Developer, QA Engineer).
+This workspace is a Git repository on branch `main` with remote `origin` at `https://github.com/acetentacion/event-invitation-platform.git`. The working tree has been pushed; see the commit history for the latest changes. Agent definitions now live in `agents/` (six: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer). The `.github/agents/` directory mirrors five of them (no Event Organizer there).
 
 Run the prototype from PowerShell with `Set-Location .\v0.1; npm start`; validate with `Set-Location .\v0.1; npm test`. It uses local SQLite data under `v0.1/data/`; do not reset or overwrite it. The app is for synthetic data, binds to loopback, and sends no email. Do not expose it publicly or enter real guest data. The root static demo is separate and remains unchanged. This workspace has no Git repository at its root, and no commit or deployment was made.
+
+## Latest session (2026-11-05) — Event Organizer review + Milestone 1 plan
+
+An Event Organizer domain review of Gatherly identified the minimum viable operational set needed before real-guest use: **attendee-level detail, event capacity cap, check-in/attendance, guest communication (reminders/updates/cancellation), and export/print**. These are captured as Milestone 1 (M1.1–M1.5) in the Engineering Manager task plan, with Milestones 2–4 for high/medium/low-priority items and cross-cutting impracticality fixes (C-1…C-5). The full to-do list with agent assignments lives in the Engineering Manager session output.
+
+Current working-tree note: an in-progress UI redesign (sidebar event-switcher, create-event button moved to top bar) is underway and has temporarily left 3 of 26 tests failing (`ui-style`, `theme-ui`, `app-ui`). These are tracked as blocker B-1 and are intentionally left uncommitted. The clean parts (new `agents/Event Organizer.md` and this state update) are committed separately.
+
+### Agent roster (updated)
+Six agents in `agents/`: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer. `.github/agents/` mirrors the first five.
 
 ## Product and goal
 
