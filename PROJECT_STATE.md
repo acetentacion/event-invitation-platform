@@ -1,17 +1,36 @@
 # Gatherly project state
 
-**Last updated:** 2026-11-05 (Asia/Manila)  
+**Last updated:** 2026-11-07 (Asia/Manila)
 **Purpose:** Durable project handoff for future sessions. Update this file when scope, decisions, implementation, or validation changes.
 
-## Current handoff snapshot (2026-11-04)
+## Current handoff snapshot (2026-11-07)
 
-The project files and latest work are saved in this workspace. The latest implementation round added bulk guest creation, guest invite-link retrieval, and expanded invitation presentation settings (reveal motion and celebration accents). A follow-up hardening pass addressed review findings: the RSVP choice grid now collapses to one column at mobile widths, the sidebar "Customize invitation" remote-control nav item was removed, the invite URL is stored in `guest_units.invite_url` instead of regex-parsing the outbox body, `guest_units` now carries a `UNIQUE(event_id, email)` constraint, `saveRsvp` runs inside a transaction, and duplicate-email detection was added to single and bulk guest creation. All 26 tests pass and JavaScript syntax checks pass. No feature is currently left mid-implementation.
+The project files and latest work are saved in this workspace. The latest implementation round added timezone-safe RSVP deadlines, capacity-aware walk-ins, replacement schedules for postponements, and operational door-list fields. Deadlines are converted from event-zone wall time to UTC with DST gap/overlap validation; legacy offset/Z values remain compatible. Walk-ins block at capacity unless a host confirms an override with a reason. Postponements keep RSVPs open and capture a local update preview. CSV and print outputs include walk-in and check-in state/timestamps. The root static demo remains unchanged, the existing SQLite database was not reset or overwritten, and the full v0.1 suite passes.
+
+### Latest session (2026-11-07) — Organizer-readiness milestone
+
+Implemented and verified in `v0.1/server.js`, `v0.1/persistence.js`, `v0.1/public/app.js`, and `v0.1/test/`:
+
+- Timezone-safe local RSVP deadlines with UTC persistence, explicit timezone display, DST transition validation, and legacy ISO compatibility.
+- Capacity-aware synthetic walk-ins with `409` blocking and explicit host override/reason flow.
+- Migration-safe postponed replacement schedule fields and automatic local update previews; RSVP and cancellation behavior remain intact.
+- Operational CSV and print output with walk-in and check-in timestamps, still host-only.
+
+The full v0.1 test suite passes 42/42, including deadline, walk-in, postponement, export, and UI assertions. JavaScript syntax checks pass for the server, persistence, and public app files. No database reset, commit, or push was performed.
 
 To continue with another coding assistant, open this folder and have it read this file first, then [`v0.1/README.md`](./v0.1/README.md) before changing the prototype. The key latest implementation is in `v0.1/public/app.js`, `v0.1/public/index.html`, `v0.1/public/styles.css`, `v0.1/server.js`, and `v0.1/persistence.js`; tests are in `v0.1/test/`.
 
-This workspace is a Git repository on branch `main` with remote `origin` at `https://github.com/acetentacion/event-invitation-platform.git`. The working tree has been pushed; see the commit history for the latest changes. Agent definitions now live in `agents/` (six: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer). The `.github/agents/` directory mirrors five of them (no Event Organizer there).
+This workspace is a Git repository on branch `main` with remote `origin` at `https://github.com/acetentacion/event-invitation-platform.git`. The latest committed changes are on `origin/main`; see the commit history for the latest changes. Agent definitions now live in `agents/` (six: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer). The `.github/agents/` directory mirrors five of them (no Event Organizer there).
 
 Run the prototype from PowerShell with `Set-Location .\v0.1; npm start`; validate with `Set-Location .\v0.1; npm test`. It uses local SQLite data under `v0.1/data/`; do not reset or overwrite it. The app is for synthetic data, binds to loopback, and sends no email. Do not expose it publicly or enter real guest data. The root static demo is separate and remains unchanged. This workspace has no Git repository at its root, and no commit or deployment was made.
+
+## Latest session (2026-11-07) — Event status and local communication previews
+
+Implemented the next Gatherly milestone in `v0.1`:
+
+- **Event lifecycle:** additive SQLite migration adds `active`, `postponed`, or `cancelled` status plus an optional organizer note. Owner-only status updates preserve publication and all existing RSVP records. Guest invitation routes still require publication, show postponed/cancelled messaging, and reject RSVP writes for cancelled events.
+- **Local communication previews:** owner-only `POST /api/events/:id/messages` captures per-recipient previews into a separate additive `local_messages` table. Filters are all, pending/no reply, yes, maybe, and no/declined; revoked guests are excluded by default. The existing outbox view merges invitation and preview captures and labels them by type. No email is sent.
+- **UI and tests:** host event cards expose status/note and local preview composers; guest invitations show lifecycle messaging. Focused API, migration, UI, and syntax checks pass, and the full suite is the required final validation.
 
 ## Latest session (2026-11-05) — Event Organizer review + Milestone 1 plan
 
@@ -31,7 +50,7 @@ Implemented in `v0.1/persistence.js` and `v0.1/server.js`:
 
 Frontend (RSVP form attendee fields) and QA tests are spec'd but not yet implemented due to pre-existing uncommitted UI changes breaking `eventDetail` in `server.js`.
 
-Current working-tree note: an in-progress UI redesign (sidebar event-switcher, create-event button moved to top bar) is underway and has temporarily left 3 of 26 tests failing (`ui-style`, `theme-ui`, `app-ui`). These are tracked as blocker B-1 and are intentionally left uncommitted. Additionally, the uncommitted changes removed the `eventDetail` function, breaking several API read paths. The clean parts (new `agents/Event Organizer.md` and this state update) are committed separately.
+Current working-tree note: the sidebar event-switcher and top-bar create-event redesign is present, and the test harness now matches the attendee table, attendee-aware RSVP payloads, and current workspace controls. The accidental `eventDetail` removal was restored. The full v0.1 suite passes 31/31 tests.
 
 ### Agent roster (updated)
 Six agents in `agents/`: Backend Developer, DevOps Engineer, Engineering Manager, Event Organizer, Frontend Developer, QA Engineer. `.github/agents/` mirrors the first five.
@@ -79,6 +98,8 @@ Gatherly is an event invitation and guest-management product. The near-term goal
 - The host event card exposes publish now; draft/published state is shown and the publish action is hidden once published.
 - **Bulk guest creation:** hosts can paste up to 100 tab-separated guest rows at once. The server validates every row before capturing any invitations; a single invalid row rejects the entire batch atomically. Each guest unit and its local outbox message are created in one transaction. A bulk composer UI (`Bulk invite` button) renders a textarea, live preview, and a link-collection panel that surfaces each generated RSVP link with copy buttons and toast feedback.
 - **Guest invite-link retrieval:** `GET /api/guests/:id/invite-link` returns the retained RSVP URL stored in `guest_units.invite_url` for a guest unit owned by the host. It returns 404 for unknown guests or other hosts, and 410 if the link has been revoked. The outbox body is a captured message, not the source of truth for the link.
+- **Event scheduling and capacity:** Hosts can update title, date, required start time, optional end time, IANA timezone, location, RSVP deadline, and optional event capacity through `PUT /api/events/:id`; timing columns migrate safely as nullable fields so existing date-only records remain valid. Schedule fields are shown in host summaries and guest invitations, while RSVP deadline behavior is unchanged. Draft token routes return a non-success response until the event is published.
+- **Organizer operations:** Authenticated hosts can download `/api/events/:id/export` as CSV with guest unit, RSVP, attendee, dietary, accessibility, age-band, revoked, and update-time fields. The host dashboard also provides a print mode for an offline-readable door/catering list. Guest routes have no export or print access.
 - **Duplicate-email guard:** `guest_units` now carries `UNIQUE(event_id, email)`. Both the single-guest and bulk endpoints check for an existing guest unit with the same email on the same event before creating anything; the bulk endpoint also rejects duplicate emails within the same batch.
 - **RSVP writes are transactional:** `saveRsvp` runs inside `BEGIN IMMEDIATE`/`COMMIT` and verifies the guest unit exists before upserting, so a failed write cannot leave a partial row.
 - **Mobile RSVP layout:** the `.rsvp-choices` grid collapses to a single column at `max-width: 460px`, matching the root demo. Previously the three-choice radio grid overflowed horizontally at 320–430px.
@@ -108,7 +129,7 @@ The root static demo can be opened directly by opening `index.html` in a browser
 
 ### Latest validation
 
-- After the hardening pass, `npm test` from `v0.1/` passes all 26 tests (0 failures), and JavaScript syntax checks pass. New regressions cover: bulk empty-array rejection, 101-row rejection, duplicate-email rejection (within a batch and against an existing guest unit), RSVP party-size boundaries (yes with 0, at limit, above limit; no must be 0; individual mode forces 1), 11/12-character password boundary, and theme contrast exactly at the 4.5:1 boundary. The existing regressions still cover atomic rejection of a partially invalid bulk batch, successful bulk creation returning unique `inviteUrl` values and party limits, `GET /api/guests/:id/invite-link` returning the retained link (200), 404 for another host, and 410 after revocation, plus the expanded `invitationSettings` contract (`revealMotion`, `celebration`) and legacy two-key backward compatibility in persistence.
+- The complete v0.1 suite passes 39/39 after the event-day milestone, including household and attendee check-in, duplicate/reversal handling, synthetic walk-ins, ownership and cancellation checks, live totals, migration-safe persistence, and UI check-in controls. JavaScript syntax checks pass for every `v0.1` JavaScript file.
 - The `.github/agents/` directory was added with five agent definition files (Backend Developer, DevOps Engineer, Engineering Manager, Frontend Developer, QA Engineer). These are configuration files for the Kilo agent system, not application code.
 - The local `v0.1/data/gatherly.sqlite` reports `setupRequired=false`, so a host account exists. The browser at port 3000 has been reloaded to the host sign-in page; no credentials are recorded here.
 

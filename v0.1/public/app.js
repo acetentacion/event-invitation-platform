@@ -5,6 +5,7 @@ const token = location.pathname.match(/^\/rsvp\/([^/]+)$/)?.[1];
 
 let eventsCache = [];
 let currentEventId = null;
+let currentSection = 'overview';
 // Tracks which guest panels are open across card rebuilds (e.g. after publishing).
 let openGuestPanels = new Set();
 // Tracks which theme panels are open across card rebuilds (e.g. after publishing).
@@ -75,6 +76,28 @@ function normalizeInvitationSettings(settings = {}) {
   };
 }
 
+const DEFAULT_INVITATION_COPY = {
+  greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+};
+
+function normalizeInvitationCopy(copy = {}) {
+  return Object.fromEntries(Object.keys(DEFAULT_INVITATION_COPY).map((key) => [
+    key, typeof copy[key] === 'string' ? copy[key] : DEFAULT_INVITATION_COPY[key]
+  ]));
+}
+
+function invitationCopyText(copy, event, guestName = 'Alex Morgan') {
+  const safeCopy = normalizeInvitationCopy(copy);
+  return {
+    greeting: safeCopy.greeting || `An invitation for ${guestName}`,
+    title: safeCopy.title || event.title,
+    intro: safeCopy.intro || 'We’d be delighted if you can join us.',
+    rsvpHeading: safeCopy.rsvpHeading || 'Will you be there?',
+    rsvpHelper: safeCopy.rsvpHelper || 'Choose the response that works for you.',
+    footerNote: safeCopy.footerNote || 'Your reply is saved with this invitation. No email is sent from here.'
+  };
+}
+
 function syncInvitationPresentation(invitation, settings, isPreview = false) {
   const safeSettings = normalizeInvitationSettings(settings);
   const envelope = $('.reveal-envelope', invitation);
@@ -140,10 +163,52 @@ function formatInvitationDate(value) {
   }).format(new Date(year, month - 1, day));
 }
 
-function formatInvitationDeadline(value) {
+function formatEventSchedule(event) {
+  const dateValue = event.status === 'postponed' && event.replacementEventDate
+    ? event.replacementEventDate : event.eventDate;
+  const startValue = event.status === 'postponed' && event.replacementEventStartTime
+    ? event.replacementEventStartTime : event.eventStartTime;
+  const endValue = event.status === 'postponed' && event.replacementEventEndTime
+    ? event.replacementEventEndTime : event.eventEndTime;
+  const timezoneValue = event.status === 'postponed' && event.replacementTimezone
+    ? event.replacementTimezone : event.timezone;
+  const date = formatInvitationDate(dateValue);
+  if (!startValue) return date;
+  const time = (value) => new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric', minute: '2-digit', ...(timezoneValue ? { timeZone: timezoneValue } : {})
+  }).format(new Date(`${dateValue}T${value}:00Z`));
+  const range = endValue ? `${time(startValue)}–${time(endValue)}` : time(startValue);
+  return `${date} · ${range}${timezoneValue ? ` (${timezoneValue})` : ''}`;
+}
+
+function supportedTimezones() {
+  const values = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : [];
+  return ['UTC', ...values.filter((value) => value !== 'UTC')];
+}
+
+function populateTimezoneSelect(select, selected, allowEmpty = false) {
+  if (!select) return;
+  select.replaceChildren();
+  if (allowEmpty) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No timezone';
+    select.append(option);
+  }
+  for (const timezone of supportedTimezones()) {
+    const option = document.createElement('option');
+    option.value = timezone;
+    option.textContent = timezone;
+    select.append(option);
+  }
+  select.value = selected || (allowEmpty ? '' : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+  if (!select.value) select.value = 'UTC';
+}
+
+function formatInvitationDeadline(value, timezone) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
-    timeZoneName: 'short'
+    timeZoneName: 'short', timeZone: timezone || 'UTC'
   }).format(new Date(value));
 }
 
@@ -157,19 +222,22 @@ function mountInvitationPreview(preview, event) {
     const element = $(selector, invitation);
     if (element) element.textContent = value;
   };
-  setText('#guest-greeting', 'An invitation for Alex Morgan');
-  setText('#guest-title', event.title);
-  setText('#guest-details', 'We’d be delighted if you can join us.');
-  setText('#guest-date', formatInvitationDate(event.eventDate));
+  const copy = invitationCopyText(event.invitationCopy, event);
+  setText('#guest-greeting', copy.greeting);
+  setText('#guest-title', copy.title);
+  setText('#guest-details', copy.intro);
+  setText('#guest-rsvp-title', copy.rsvpHeading);
+  setText('#guest-rsvp-helper', copy.rsvpHelper);
+  setText('#guest-date', formatEventSchedule(event));
   const locationRow = $('#guest-location-row', invitation);
   locationRow.hidden = !event.location;
   if (event.location) setText('#guest-location', event.location);
   const deadlineRow = $('#guest-deadline-row', invitation);
   deadlineRow.hidden = !event.rsvpDeadline;
-  if (event.rsvpDeadline) setText('#guest-deadline', formatInvitationDeadline(event.rsvpDeadline));
+  if (event.rsvpDeadline) setText('#guest-deadline', formatInvitationDeadline(event.rsvpDeadline, event.timezone));
   const partyLimit = event.guestMode === 'individual' ? 1 : 4;
   setText('#guest-capacity', `You can include up to ${partyLimit} ${partyLimit === 1 ? 'person' : 'people'} in your reply.`);
-  setText('.invitation-footnote', 'Example only — guest name and party size are illustrative; each guest invitation uses its own party limit.');
+  setText('.invitation-footnote', copy.footerNote);
 
   for (const element of invitation.querySelectorAll('[id]')) element.removeAttribute('id');
   for (const element of invitation.querySelectorAll('[aria-labelledby], [aria-describedby]')) {
@@ -268,6 +336,7 @@ async function openOutbox() {
 function openCreateEventForm() {
   const section = $('#create-event');
   section.hidden = false;
+  populateTimezoneSelect($('#event-form [name=timezone]'), null);
   const title = $('#event-form [name=title]');
   title.focus();
   if (typeof section.scrollIntoView === 'function') {
@@ -291,6 +360,8 @@ $('#event-form').addEventListener('submit', async (event) => {
   const form = event.currentTarget;
   const data = formValues(form);
   if (data.rsvpDeadline) data.rsvpDeadline = new Date(data.rsvpDeadline).toISOString();
+  if (data.capacity) data.capacity = Number(data.capacity);
+  else data.capacity = null;
   try {
     await api('/api/events', { method: 'POST', body: JSON.stringify(data) });
     form.reset();
@@ -302,6 +373,14 @@ $('#event-form').addEventListener('submit', async (event) => {
 async function loadEvents() {
   const { events } = await api('/api/events');
   eventsCache = events;
+  const hashMatch = String(location.hash || '').match(/^#event-(\d+)(?:\/(overview|guests|event-day|messages|invitation|settings))?$/);
+  if (hashMatch && events.some((event) => String(event.id) === hashMatch[1])) {
+    currentEventId = Number(hashMatch[1]);
+    currentSection = hashMatch[2] || 'overview';
+  } else if (currentEventId !== null && !events.some((event) => event.id === currentEventId)) {
+    currentEventId = null;
+    currentSection = 'overview';
+  }
   const container = $('#events');
   container.replaceChildren();
   if (!events.length) {
@@ -321,8 +400,9 @@ async function loadEvents() {
   for (const event of events) {
     const card = document.createElement('section');
     card.className = 'card event-card';
+    if (event.status === 'cancelled') card.classList.add('event-card--cancelled');
     card.dataset.eventId = String(event.id);
-    card.innerHTML = `<div class="event-topbar"><p class="breadcrumb"><span class="event-breadcrumb-title"></span></p><span class="local-event-tag">LOCAL EVENT</span></div><div class="event-heading"><div class="event-heading__copy"><div class="event-status"><span class="publication-status" role="status"></span><span class="response-state"></span></div><h2></h2><p class="event-meta"></p></div><div class="event-actions"><button class="publish">Publish event</button><button class="add secondary">Add guest unit</button><button class="guest-toggle secondary" aria-expanded="false">Show guests</button><button class="toggle secondary"></button><button class="refresh secondary">Refresh</button></div></div><div class="stats" aria-live="polite"></div><section class="publish-next-steps notice" role="status" aria-labelledby="__publish_next_steps_title" hidden><h3 id="__publish_next_steps_title">Published locally — what next?</h3><p>Your event is ready in this local workspace. Create a guest unit to generate a private RSVP link. Its invitation is captured in the local outbox; no email is sent.</p><div class="row"><button type="button" class="next-steps-add">Create a guest unit</button><button type="button" class="secondary next-steps-outbox">Open local email outbox</button></div></section><section class="guest-panel" aria-labelledby="__guest_list_title" hidden><div class="guest-panel__head"><div><p class="section-kicker">INVITATIONS</p><h3 id="__guest_list_title">Your guest list</h3><p class="muted">Guest units and replies stored in this local workspace only.</p></div><button type="button" class="guest-panel-toggle secondary" aria-expanded="false" aria-controls="__guest_panel">Hide guest list</button></div><div class="guest-form-slot"></div><div class="guest-table"></div></section><div class="theme-editor">
+    card.innerHTML = `<div class="event-topbar"><p class="breadcrumb"><span class="event-breadcrumb-title"></span></p><span class="local-event-tag">LOCAL EVENT</span></div><div class="event-heading"><div class="event-heading__copy"><div class="event-status"><span class="publication-status" role="status"></span><span class="response-state"></span></div><h2></h2><p class="event-meta"></p></div><div class="event-actions"><button class="open-event">Open event</button><button class="publish">Publish event</button><button class="add secondary">Add guest unit</button><button class="guest-toggle secondary" aria-expanded="false">Show guests</button><button class="export secondary">Export CSV</button><button class="print secondary">Print list</button><button class="toggle secondary"></button><button class="refresh secondary">Refresh</button></div></div><div class="stats" aria-live="polite"></div><div class="event-workspace" hidden><div class="event-workspace__bar"><button type="button" class="back-events secondary">Back to events</button><nav class="event-section-nav" aria-label="Event workspace sections" role="tablist"><button type="button" role="tab" data-section="overview" aria-selected="true">Overview</button><button type="button" role="tab" data-section="guests" aria-selected="false">Guests</button><button type="button" role="tab" data-section="event-day" aria-selected="false">Event day</button><button type="button" role="tab" data-section="messages" aria-selected="false">Messages</button><button type="button" role="tab" data-section="invitation" aria-selected="false">Invitation</button><button type="button" role="tab" data-section="settings" aria-selected="false">Settings</button></nav></div></div><section class="check-in-panel notice" data-event-section="event-day"><div class="check-in-panel__heading"><div><p class="section-kicker">EVENT DAY</p><h3>Check-in</h3><p class="help">Search a guest unit, email, or named attendee.</p></div><form class="walk-in-form"><input name="name" maxlength="100" placeholder="Walk-in name" aria-label="Walk-in name" required><input name="attendeeName" maxlength="100" placeholder="Attendee name" aria-label="Walk-in attendee name"><button type="submit">Add walk-in</button></form></div><label class="check-in-search-label">Find arrival<input class="check-in-search" type="search" placeholder="Name, email, or attendee" autocomplete="off"></label><div class="check-in-results" aria-live="polite"></div><p class="check-in-message message" role="status" aria-live="polite"></p></section><section class="event-status-panel notice" data-event-section="settings"><form class="event-status-form"><div class="columns"><label>Event status<select name="status"><option value="active">Active</option><option value="postponed">Postponed</option><option value="cancelled">Cancelled</option></select></label><label>Organizer note (optional)<input name="note" maxlength="500"></label></div><button type="submit" class="secondary">Save event status</button><p class="event-status-message message" role="status" aria-live="polite"></p></form></section><section class="local-message-panel notice" data-event-section="messages"><form class="local-message-form"><strong>Local message preview</strong><p class="help">Capture a message for selected guests in the local outbox. No email is sent.</p><div class="columns"><label>Recipients<select name="filter"><option value="all">All guests</option><option value="pending">Pending / no reply</option><option value="yes">Attending / yes</option><option value="maybe">Maybe</option><option value="no">Declined</option></select></label><label>Subject (optional)<input name="subject" maxlength="200"></label></div><label>Message (optional)<textarea name="message" rows="4" maxlength="10000"></textarea></label><button type="submit" class="secondary">Capture local preview</button><p class="local-message-result message" role="status" aria-live="polite"></p></form></section><section class="publish-next-steps notice" role="status" aria-labelledby="__publish_next_steps_title" data-event-section="overview" hidden><h3 id="__publish_next_steps_title">Published locally — what next?</h3><p>Your event is ready in this local workspace. Create a guest unit to generate a private RSVP link. Its invitation is captured in the local outbox; no email is sent.</p><div class="row"><button type="button" class="next-steps-add">Create a guest unit</button><button type="button" class="secondary next-steps-outbox">Open local email outbox</button></div></section><section class="guest-panel" data-event-section="guests" aria-labelledby="__guest_list_title" hidden><div class="guest-panel__head"><div><p class="section-kicker">INVITATIONS</p><h3 id="__guest_list_title">Your guest list</h3><p class="muted">Guest units and replies stored in this local workspace only.</p></div><button type="button" class="guest-panel-toggle secondary" aria-expanded="false" aria-controls="__guest_panel">Hide guest list</button></div><div class="guest-form-slot"></div><div class="guest-table"></div></section><section class="print-view" hidden></section><div class="theme-editor" data-event-section="invitation">
       <button type="button" class="secondary theme-toggle" aria-expanded="false">Customize invitation</button>
       <section class="theme-panel" hidden>
         <p class="help">Adjust how the invitation opens, its optional background music, colors, font, and cover. Preview changes before saving.</p>
@@ -361,6 +441,35 @@ async function loadEvents() {
           <button type="button" class="save-invitation-settings">Save invitation experience</button>
           <p class="invitation-settings-status message" role="status" aria-live="polite"></p>
         </section>
+        <section class="invitation-copy-editor" aria-labelledby="invitation-copy-title">
+          <div class="invitation-settings__heading">
+            <p class="section-kicker">INVITATION COPY</p>
+            <h3 class="invitation-copy-title-heading">Make the note yours</h3>
+            <p class="help">Leave a field blank to use Gatherly's event-aware default. Copy is rendered as text.</p>
+          </div>
+          <div class="columns invitation-copy-controls">
+            <label>Greeting / overline
+              <input class="invitation-copy-greeting" maxlength="120">
+            </label>
+            <label>Title override (optional)
+              <input class="invitation-copy-title" maxlength="100">
+            </label>
+            <label class="invitation-copy-wide">Intro message
+              <textarea class="invitation-copy-intro" maxlength="500" rows="3"></textarea>
+            </label>
+            <label>RSVP heading
+              <input class="invitation-copy-rsvp-heading" maxlength="100">
+            </label>
+            <label>RSVP helper text
+              <input class="invitation-copy-rsvp-helper" maxlength="200">
+            </label>
+            <label class="invitation-copy-wide">Footer note
+              <textarea class="invitation-copy-footer" maxlength="300" rows="2"></textarea>
+            </label>
+          </div>
+          <button type="button" class="save-invitation-copy">Save invitation copy</button>
+          <p class="invitation-copy-status message" role="status" aria-live="polite"></p>
+        </section>
         <div class="columns theme-controls">
           <label>Theme preset
             <select class="theme-preset" aria-label="Theme preset">
@@ -390,34 +499,175 @@ async function loadEvents() {
         <button type="button" class="save-theme">Save theme</button>
       </section>
     </div>`;
+    const recipientFilter = card.querySelector('.local-message-form select[name="filter"]');
+    if (recipientFilter) {
+      const option = document.createElement('option');
+      option.value = 'unrevoked';
+      option.textContent = 'Unrevoked / active';
+      recipientFilter.append(option);
+    }
       const themeEditor = $('.theme-editor', card);
       const themeToggle = $('.theme-toggle', card);
       $('.event-actions', card).append(themeToggle);
       $('.stats', card).after(themeEditor);
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'edit secondary';
+    editButton.textContent = 'Edit event';
+    editButton.setAttribute('aria-expanded', 'false');
+    $('.event-actions', card).append(editButton);
+    const editPanel = document.createElement('section');
+    editPanel.className = 'event-edit-panel notice';
+    editPanel.dataset.eventSection = 'settings';
+    editPanel.hidden = true;
+    editPanel.innerHTML = `<form class="event-edit-form"><label>Event name <input name="title" maxlength="100" required></label><div class="columns"><label>Event date <input name="eventDate" type="date" required></label><label>Start time <input name="eventStartTime" type="time"></label><label>End time (optional) <input name="eventEndTime" type="time"></label><label>Timezone <select name="timezone"></select></label><label>RSVP deadline <input name="rsvpDeadline" type="datetime-local"></label></div><label>Location (optional) <input name="location" maxlength="200"></label><label>Event capacity (optional) <input name="capacity" type="number" min="1" max="100000" inputmode="numeric"></label><div class="row"><button type="submit">Save event details</button><button type="button" class="secondary event-edit-cancel">Cancel</button></div><p class="event-edit-status message" role="status" aria-live="polite"></p></form>`;
+    card.append(editPanel);
+    const editForm = $('.event-edit-form', editPanel);
+    if (editForm) {
+      const editStatus = $('.event-edit-status', editPanel);
+      const setEditValues = () => {
+        editForm.querySelector('[name=title]').value = event.title;
+        editForm.querySelector('[name=eventDate]').value = event.eventDate;
+        editForm.querySelector('[name=eventStartTime]').value = event.eventStartTime || '';
+        editForm.querySelector('[name=eventEndTime]').value = event.eventEndTime || '';
+        populateTimezoneSelect(editForm.querySelector('[name=timezone]'), event.timezone, !event.eventStartTime);
+        editForm.querySelector('[name=location]').value = event.location || '';
+        editForm.querySelector('[name=capacity]').value = event.capacity ?? '';
+        editForm.querySelector('[name=rsvpDeadline]').value = event.rsvpDeadline
+          ? new Date(event.rsvpDeadline).toISOString().slice(0, 16) : '';
+      };
+      editButton.addEventListener('click', () => {
+        setEditValues();
+        editPanel.hidden = false;
+        editButton.setAttribute('aria-expanded', 'true');
+        editForm.querySelector('[name=title]').focus();
+      });
+      $('.event-edit-cancel', editPanel).addEventListener('click', () => {
+        editPanel.hidden = true;
+        editButton.setAttribute('aria-expanded', 'false');
+      });
+      editForm.addEventListener('submit', async (submitEvent) => {
+        submitEvent.preventDefault();
+        const data = formValues(editForm);
+        if (data.rsvpDeadline) data.rsvpDeadline = new Date(data.rsvpDeadline).toISOString();
+        data.capacity = data.capacity ? Number(data.capacity) : null;
+        try {
+          const result = await api(`/api/events/${event.id}`, { method: 'PUT', body: JSON.stringify(data) });
+          Object.assign(event, result.event);
+          editPanel.hidden = true;
+          editButton.setAttribute('aria-expanded', 'false');
+          await loadEvents();
+        } catch (error) { showMessage(editStatus, error.message, true); }
+      });
+    }
     const guestActions = document.createElement('div');
     guestActions.className = 'guest-actions';
     guestActions.setAttribute('role', 'group');
     guestActions.setAttribute('aria-label', 'Add guests');
     const addButton = $('.add', card);
     addButton.setAttribute('aria-expanded', 'false');
-    addButton.addEventListener('click', () => toggleGuestComposer(event, card, 'single'));
+    addButton.addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      toggleGuestComposer(event, card, 'single');
+    });
     guestActions.append(addButton);
     const bulkButton = document.createElement('button');
     bulkButton.type = 'button';
     bulkButton.className = 'bulk-add secondary';
     bulkButton.textContent = 'Bulk invite';
     bulkButton.setAttribute('aria-expanded', 'false');
-    bulkButton.addEventListener('click', () => toggleGuestComposer(event, card, 'bulk'));
+    bulkButton.addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      toggleGuestComposer(event, card, 'bulk');
+    });
     guestActions.append(bulkButton);
     card.guestActionButtons = { single: addButton, bulk: bulkButton };
     $('.publish', card).after(guestActions);
+    const openEvent = $('.open-event', card);
+    if (openEvent) openEvent.addEventListener('click', () => switchEvent(String(event.id), card));
+    const backEvents = $('.back-events', card);
+    if (backEvents) backEvents.addEventListener('click', () => switchEvent(''));
+    card.querySelectorAll('.event-section-nav [data-section]').forEach((button) => {
+      button.addEventListener('click', () => setEventSection(event, card, button.dataset.section));
+    });
     $('.guest-form-slot', card).hidden = true;
     $('.event-breadcrumb-title', card).textContent = event.title;
     $('h2', card).textContent = event.title;
     updatePublicationStatus(event, card);
+    const statusLabels = { active: 'Active', postponed: 'Postponed', cancelled: 'Cancelled' };
+    const lifecycleStatus = document.createElement('span');
+    lifecycleStatus.className = 'lifecycle-status';
+    lifecycleStatus.setAttribute('role', 'status');
+    lifecycleStatus.hidden = event.status !== 'cancelled';
+    lifecycleStatus.textContent = event.status === 'cancelled' ? statusLabels.cancelled : '';
+    $('.event-status', card).append(lifecycleStatus);
+    const statusForm = $('.event-status-form', card);
+    const statusMessage = $('.event-status-message', card);
+    if (statusForm) {
+      const replacementFields = document.createElement('fieldset');
+      replacementFields.className = 'replacement-schedule-fields';
+      replacementFields.innerHTML = '<legend>Replacement schedule for postponement</legend><div class="columns"><label>New date <input name="replacementEventDate" type="date"></label><label>New start time <input name="replacementStartTime" type="time"></label><label>New end time (optional) <input name="replacementEndTime" type="time"></label><label>New timezone <select name="replacementTimezone"></select></label></div><p class="help">Required when saving a new postponed schedule. RSVPs remain open.</p>';
+      statusForm.append(replacementFields);
+      populateTimezoneSelect(statusForm.elements.replacementTimezone, event.replacementTimezone || event.timezone || null);
+      statusForm.elements.status.value = event.status || 'active';
+      statusForm.elements.note.value = event.statusNote || '';
+      if (statusForm.elements.replacementEventDate) statusForm.elements.replacementEventDate.value = event.replacementEventDate || '';
+      if (statusForm.elements.replacementStartTime) statusForm.elements.replacementStartTime.value = event.replacementEventStartTime || '';
+      if (statusForm.elements.replacementEndTime) statusForm.elements.replacementEndTime.value = event.replacementEventEndTime || '';
+      statusForm.addEventListener('submit', async (submitEvent) => {
+        submitEvent.preventDefault();
+        try {
+          const replacement = {
+            eventDate: statusForm.elements.replacementEventDate?.value || '',
+            startTime: statusForm.elements.replacementStartTime?.value || '',
+            endTime: statusForm.elements.replacementEndTime?.value || '',
+            timezone: statusForm.elements.replacementTimezone?.value || ''
+          };
+          const result = await api(`/api/events/${event.id}/status`, {
+            method: 'POST', body: JSON.stringify({ status: statusForm.elements.status.value, note: statusForm.elements.note.value, replacement })
+          });
+          Object.assign(event, result.event);
+          statusMessage.textContent = 'Event status saved.';
+          await loadEvents();
+        } catch (error) { showMessage(statusMessage, error.message, true); }
+      });
+    }
     $('.response-state', card).textContent = event.responsesOpen ? 'RSVPs open' : 'RSVPs closed';
-    $('.event-meta', card).textContent = `${event.eventDate} · ${event.location || 'No location'} · ${event.guestMode} units${event.rsvpDeadline ? ` · deadline ${new Date(event.rsvpDeadline).toLocaleString()}` : ''}`;
+    $('.event-meta', card).textContent = `${formatEventSchedule(event)} · ${event.location || 'No location'} · ${event.guestMode} units${event.rsvpDeadline ? ` · deadline ${formatInvitationDeadline(event.rsvpDeadline, event.timezone)}` : ''}`;
+    populateTimezoneSelect($('#event-form [name=timezone]'), null);
+    $('.export', card).addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      location.href = `/api/events/${event.id}/export`;
+    });
+    $('.print', card).addEventListener('click', async () => {
+      if (event.status === 'cancelled') return;
+      await renderDashboard(event, card);
+      const printView = $('.print-view', card);
+      printView.hidden = false;
+      card.classList.add('is-printing');
+      window.print();
+      card.classList.remove('is-printing');
+      printView.hidden = true;
+    });
+    if (event.capacity !== null && event.capacity !== undefined) {
+      $('.event-meta', card).textContent += ` · capacity ${event.capacity}`;
+    }
+    const messageForm = $('.local-message-form', card);
+    const messageResult = $('.local-message-result', card);
+    if (messageForm) messageForm.addEventListener('submit', async (submitEvent) => {
+      submitEvent.preventDefault();
+      if (event.status === 'cancelled') return;
+      try {
+        const result = await api(`/api/events/${event.id}/messages`, {
+          method: 'POST', body: JSON.stringify(formValues(messageForm))
+        });
+        messageResult.textContent = `${result.count} local preview${result.count === 1 ? '' : 's'} captured. No email was sent.`;
+        messageForm.reset();
+        await loadOutbox();
+      } catch (error) { showMessage(messageResult, error.message, true); }
+    });
     $('.publish', card).addEventListener('click', async () => {
+      if (event.status === 'cancelled') return;
       if (event.published) return;
       const publishButton = $('.publish', card);
       publishButton.disabled = true;
@@ -438,11 +688,15 @@ async function loadEvents() {
         showMessage($('#global-message'), error.message, true);
       }
     });
-    $('.next-steps-add', card).addEventListener('click', () => showGuestForm(event, card));
+    $('.next-steps-add', card).addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      showGuestForm(event, card);
+    });
     $('.next-steps-outbox', card).addEventListener('click', openOutbox);
     const toggle = $('.toggle', card);
     toggle.textContent = event.responsesOpen ? 'Close RSVPs' : 'Reopen RSVPs';
     toggle.addEventListener('click', async () => {
+      if (event.status === 'cancelled') return;
       try {
         await api(`/api/events/${event.id}/responses`, {
           method: 'POST', body: JSON.stringify({ open: !event.responsesOpen })
@@ -450,7 +704,10 @@ async function loadEvents() {
         await loadEvents();
       } catch (error) { showMessage($('#global-message'), error.message, true); }
     });
-    $('.refresh', card).addEventListener('click', () => renderDashboard(event, card));
+    $('.refresh', card).addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      return renderDashboard(event, card);
+    });
 
     // Unique IDs for this card's landmarks (avoids duplicate-id collisions across cards).
     const safeId = String(event.id).replace(/[^a-z0-9_-]/gi, '');
@@ -494,7 +751,10 @@ async function loadEvents() {
 
     setupThemeEditor(event, card);
     container.append(card);
+    syncEventCardAvailability(event, card);
     await renderDashboard(event, card);
+    syncEventCardAvailability(event, card);
+    syncEventWorkspace(event, card);
   }
   renderEventSwitcher();
   applyEventFilter();
@@ -531,23 +791,63 @@ function applyEventFilter() {
   });
 }
 
-function switchEvent(eventId) {
+function switchEvent(eventId, selectedCard = null) {
   currentEventId = eventId === '' || eventId === null ? null : Number(eventId);
+  currentSection = 'overview';
+  const selected = currentEventId === null ? null : eventsCache.find((event) => event.id === currentEventId);
+  const nextHash = selected ? `#event-${selected.id}/overview` : '#events';
+  if (location.hash !== nextHash && typeof history !== 'undefined') history.replaceState(null, '', nextHash);
   $('#event-switch').value = currentEventId !== null ? String(currentEventId) : '';
   applyEventFilter();
-  if (currentEventId === null) {
-    // Returning to the full list: collapse every guest panel so the grid stays tidy.
-    document.querySelectorAll('.event-card').forEach((card) => {
-      if (typeof card.guestPanelToggleFn === 'function') card.guestPanelToggleFn(false);
-    });
-    return;
+  const cards = document.querySelectorAll?.('.event-card') || [];
+  cards.forEach((card) => {
+    const event = eventsCache.find((item) => String(item.id) === String(card.dataset.eventId));
+    if (event) syncEventWorkspace(event, card);
+  });
+  if (selected) {
+    const activeCard = selectedCard || document.querySelector(`.event-card[data-event-id="${currentEventId}"]`);
+    if (activeCard) syncEventWorkspace(selected, activeCard);
+    if (activeCard && typeof activeCard.scrollIntoView === 'function') activeCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (activeCard) activeCard.querySelector('.event-section-nav button')?.focus();
+    if (activeCard) renderDashboard(selected, activeCard).catch((error) => showMessage($('#global-message'), error.message, true));
   }
-  const selected = document.querySelector(`.event-card[data-event-id="${currentEventId}"]`);
-  if (selected && typeof selected.guestPanelToggleFn === 'function') {
-    selected.guestPanelToggleFn(true);
+}
+
+function setEventSection(event, card, section) {
+  currentSection = section;
+  const validSections = ['overview', 'guests', 'event-day', 'messages', 'invitation', 'settings'];
+  if (!validSections.includes(section)) currentSection = 'overview';
+  if (typeof history !== 'undefined') history.replaceState(null, '', `#event-${event.id}/${currentSection}`);
+  syncEventWorkspace(event, card);
+  const target = card.querySelector(`.event-section-nav button[data-section="${currentSection}"]`);
+  if (target) target.focus();
+}
+
+function syncEventWorkspace(event, card) {
+  const selected = currentEventId !== null && String(currentEventId) === String(event.id);
+  if (typeof card.classList.toggle === 'function') card.classList.toggle('is-selected', selected);
+  else if (selected) card.classList.add('is-selected');
+  else card.classList.remove('is-selected');
+  const workspace = $('.event-workspace', card);
+  if (workspace) workspace.hidden = !selected;
+  const openButton = $('.open-event', card);
+  if (openButton) openButton.textContent = selected ? 'Manage event' : 'Open event';
+  const detailControls = ['.add', '.bulk-add', '.guest-toggle', '.export', '.print', '.toggle', '.refresh', '.edit', '.theme-toggle', '.back-events'];
+  for (const selector of detailControls) {
+    const control = $(selector, card);
+    if (control) control.hidden = !selected;
   }
-  if (selected && typeof selected.scrollIntoView === 'function') {
-    selected.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  card.querySelectorAll('[data-event-section]').forEach((panel) => {
+    panel.hidden = !selected || panel.dataset.eventSection !== currentSection;
+  });
+  card.querySelectorAll('.event-section-nav [data-section]').forEach((button) => {
+    const active = selected && button.dataset.section === currentSection;
+    button.setAttribute('aria-selected', String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  if (!selected) {
+    const guestPanel = $('.guest-panel', card);
+    if (guestPanel) guestPanel.hidden = true;
   }
 }
 
@@ -574,10 +874,20 @@ function setupThemeEditor(event, card) {
   const chimeEnabled = $('.invitation-chime-enabled', card);
   const saveInvitation = $('.save-invitation-settings', card);
   const invitationStatus = $('.invitation-settings-status', card);
+  const copyGreeting = $('.invitation-copy-greeting', card);
+  const copyTitle = $('.invitation-copy-title', card);
+  const copyIntro = $('.invitation-copy-intro', card);
+  const copyRsvpHeading = $('.invitation-copy-rsvp-heading', card);
+  const copyRsvpHelper = $('.invitation-copy-rsvp-helper', card);
+  const copyFooter = $('.invitation-copy-footer', card);
+  const saveInvitationCopy = $('.save-invitation-copy', card);
+  const invitationCopyStatus = $('.invitation-copy-status', card);
   const invitationSettingsTitle = $('.invitation-settings-title', card);
+  const invitationCopyTitle = $('.invitation-copy-title-heading', card);
   const previewReveal = $('.preview-reveal-toggle', card);
   const initialTheme = normalizeTheme(event.theme || DEFAULT_THEME);
   let draftInvitationSettings = normalizeInvitationSettings(event.invitationSettings);
+  let draftInvitationCopy = normalizeInvitationCopy(event.invitationCopy);
   let draftTheme = { ...initialTheme };
   let previewRevealed = false;
   let isSaving = false;
@@ -586,6 +896,8 @@ function setupThemeEditor(event, card) {
 panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     invitationSettingsTitle.id = `invitation-settings-title-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     $('.invitation-settings', card).setAttribute('aria-labelledby', invitationSettingsTitle.id);
+  invitationCopyTitle.id = `invitation-copy-title-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
+  $('.invitation-copy-editor', card).setAttribute('aria-labelledby', invitationCopyTitle.id);
     toggle.setAttribute('aria-controls', panel.id);
     // Restore open state across card rebuilds (e.g. after publishing), matching the guest-toggle pattern.
     const themeExpanded = openThemePanels.has(String(event.id));
@@ -610,6 +922,29 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
   const setInvitationStatus = (message, isError = false) => {
     invitationStatus.textContent = message;
     invitationStatus.className = `invitation-settings-status message${message ? (isError ? ' error' : ' success') : ''}`;
+  };
+  const setInvitationCopyStatus = (message, isError = false) => {
+    invitationCopyStatus.textContent = message;
+    invitationCopyStatus.className = `invitation-copy-status message${message ? (isError ? ' error' : ' success') : ''}`;
+  };
+  const syncInvitationCopyFields = () => {
+    const values = invitationCopyText(draftInvitationCopy, event);
+    copyGreeting.value = draftInvitationCopy.greeting;
+    copyTitle.value = draftInvitationCopy.title;
+    copyIntro.value = draftInvitationCopy.intro;
+    copyRsvpHeading.value = draftInvitationCopy.rsvpHeading;
+    copyRsvpHelper.value = draftInvitationCopy.rsvpHelper;
+    copyFooter.value = draftInvitationCopy.footerNote;
+    const setText = (selector, value) => {
+      const element = $(selector, invitation);
+      if (element) element.textContent = value;
+    };
+    setText('#guest-greeting', values.greeting);
+    setText('#guest-title', values.title);
+    setText('#guest-details', values.intro);
+    setText('#guest-rsvp-title', values.rsvpHeading);
+    setText('#guest-rsvp-helper', values.rsvpHelper);
+    setText('.invitation-footnote', values.footerNote);
   };
   const syncFields = () => {
     preset.value = draftTheme.preset;
@@ -641,8 +976,10 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
   };
   syncFields();
   syncInvitationFields();
+  syncInvitationCopyFields();
   validateContrast();
   previewReveal.addEventListener('click', () => {
+    if (event.status === 'cancelled') return;
     previewRevealed = !previewRevealed;
     $('.reveal-envelope', invitation).hidden = previewRevealed;
     $('.guest-content', invitation).hidden = !previewRevealed;
@@ -651,6 +988,10 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     previewReveal.setAttribute('aria-pressed', String(previewRevealed));
   });
   toggle.addEventListener('click', () => {
+      if (event.status === 'cancelled') return;
+      if (currentEventId === event.id && currentSection !== 'invitation') {
+        setEventSection(event, card, 'invitation');
+      }
       panel.hidden = !panel.hidden;
       const expanded = !panel.hidden;
       toggle.setAttribute('aria-expanded', String(expanded));
@@ -680,7 +1021,45 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     syncInvitationPresentation(invitation, draftInvitationSettings, true);
     setInvitationStatus('');
   });
+  const copyFields = [
+    [copyGreeting, 'greeting'], [copyTitle, 'title'], [copyIntro, 'intro'],
+    [copyRsvpHeading, 'rsvpHeading'], [copyRsvpHelper, 'rsvpHelper'], [copyFooter, 'footerNote']
+  ];
+  for (const [control, key] of copyFields) {
+    control.addEventListener('input', () => {
+      draftInvitationCopy[key] = control.value;
+      syncInvitationCopyFields();
+      setInvitationCopyStatus('');
+    });
+    control.addEventListener('change', () => {
+      draftInvitationCopy[key] = control.value;
+      syncInvitationCopyFields();
+      setInvitationCopyStatus('');
+    });
+  }
+  saveInvitationCopy.addEventListener('click', async () => {
+    if (event.status === 'cancelled') return;
+    saveInvitationCopy.disabled = true;
+    saveInvitationCopy.textContent = 'Saving…';
+    setInvitationCopyStatus('');
+    try {
+      const copy = normalizeInvitationCopy(draftInvitationCopy);
+      const result = await api(`/api/events/${event.id}/invitation-copy`, {
+        method: 'PUT', body: JSON.stringify(copy)
+      });
+      event.invitationCopy = result.invitationCopy;
+      draftInvitationCopy = normalizeInvitationCopy(result.invitationCopy);
+      syncInvitationCopyFields();
+      setInvitationCopyStatus('Invitation copy saved.');
+    } catch (error) {
+      setInvitationCopyStatus(error.message, true);
+    } finally {
+      saveInvitationCopy.disabled = false;
+      saveInvitationCopy.textContent = 'Save invitation copy';
+    }
+  });
   saveInvitation.addEventListener('click', async () => {
+    if (event.status === 'cancelled') return;
     isSavingInvitation = true;
     saveInvitation.disabled = true;
     saveInvitation.textContent = 'Saving…';
@@ -765,12 +1144,14 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     }
   });
   $('.remove-cover', card).addEventListener('click', () => {
+    if (event.status === 'cancelled') return;
     draftTheme.coverImage = null;
     fileInput.value = '';
     setThemePreview(invitation, image, draftTheme);
     setStatus('Cover image removed from this draft.');
   });
   save.addEventListener('click', async () => {
+    if (event.status === 'cancelled') return;
     if (!validateContrast()) return;
     isSaving = true;
     save.disabled = true;
@@ -808,18 +1189,164 @@ function updatePublicationStatus(event, card) {
   $('.publish-next-steps', card).hidden = !published;
 }
 
+function syncEventCardAvailability(event, card) {
+  if (event.status !== 'cancelled') return;
+  for (const selector of [
+    '.publish', '.add', '.bulk-add', '.guest-toggle', '.guest-panel-toggle',
+    '.export', '.print', '.refresh', '.theme-toggle', '.next-steps-add',
+    '.guest-empty-state button',
+    '.check-in-panel button', '.check-in-panel input',
+    '.save-theme', '.save-invitation-settings', '.remove-cover', '.preview-reveal-toggle',
+    '.local-message-form button', '.toggle'
+  ]) {
+    const control = card.querySelector(selector);
+    if (control) {
+      control.disabled = true;
+      control.setAttribute('aria-disabled', 'true');
+    }
+  }
+}
+
+function renderCheckInPanel(event, card, guests) {
+  const panel = $('.check-in-panel', card);
+  if (!panel) return;
+  const search = $('.check-in-search', panel);
+  const results = $('.check-in-results', panel);
+  const message = $('.check-in-message', panel);
+  const query = String(search?.value || '').trim().toLowerCase();
+  const matches = guests.filter((guest) => {
+    const values = [guest.name, guest.email, ...(guest.attendees || []).map((attendee) => attendee.name)];
+    return !query || values.some((value) => String(value || '').toLowerCase().includes(query));
+  });
+  results.replaceChildren();
+  if (!matches.length) {
+    results.textContent = query ? 'No matching guest or attendee.' : 'No guest units yet.';
+  }
+  const update = async (target, reverse = false) => {
+    try {
+      await api(`/api/events/${event.id}/check-in${reverse ? '/reverse' : ''}`, {
+        method: 'POST', body: JSON.stringify(target)
+      });
+      await renderDashboard(event, card);
+    } catch (error) { showMessage(message, error.message, true); }
+  };
+  for (const guest of matches) {
+    const item = document.createElement('article');
+    item.className = 'check-in-result';
+    const identity = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = guest.name;
+    const detail = document.createElement('small');
+    detail.textContent = guest.email || (guest.walkIn ? 'Synthetic walk-in' : 'No email');
+    identity.append(title, detail);
+    const actions = document.createElement('div');
+    actions.className = 'check-in-result__actions';
+    const unitButton = document.createElement('button');
+    unitButton.type = 'button';
+    unitButton.className = guest.checkedInAt ? 'secondary' : '';
+    unitButton.textContent = guest.checkedInAt ? 'Reverse unit' : 'Check in unit';
+    unitButton.addEventListener('click', () => update({ guestId: guest.id }, Boolean(guest.checkedInAt)));
+    actions.append(unitButton);
+    item.append(identity, actions);
+    for (const attendee of guest.attendees || []) {
+      if (!attendee.name) continue;
+      const attendeeRow = document.createElement('div');
+      attendeeRow.className = 'check-in-attendee';
+      const attendeeLabel = document.createElement('span');
+      attendeeLabel.textContent = attendee.name;
+      const attendeeButton = document.createElement('button');
+      attendeeButton.type = 'button';
+      attendeeButton.className = attendee.checkedInAt ? 'secondary' : '';
+      attendeeButton.textContent = attendee.checkedInAt ? 'Reverse' : 'Check in';
+      attendeeButton.disabled = Boolean(guest.checkedInAt);
+      attendeeButton.addEventListener('click', () => update({ attendeeId: attendee.id }, Boolean(attendee.checkedInAt)));
+      attendeeRow.append(attendeeLabel, attendeeButton);
+      item.append(attendeeRow);
+    }
+    results.append(item);
+  }
+  if (search && !search.checkInBound) {
+    search.checkInBound = true;
+    search.addEventListener('input', () => renderCheckInPanel(event, card, guests));
+  }
+  const walkInForm = $('.walk-in-form', panel);
+  if (walkInForm && !walkInForm.checkInBound) {
+    walkInForm.checkInBound = true;
+    walkInForm.addEventListener('submit', async (submitEvent) => {
+      submitEvent.preventDefault();
+      const payload = formValues(walkInForm);
+      try {
+        await api(`/api/events/${event.id}/check-in/walk-in`, {
+          method: 'POST', body: JSON.stringify(payload)
+        });
+        walkInForm.reset();
+        await renderDashboard(event, card);
+      } catch (error) {
+        if (/no walk-in place remains/i.test(error.message) && typeof window.confirm === 'function' &&
+            window.confirm('Capacity is full. Record this walk-in with a host override?')) {
+          const reason = typeof window.prompt === 'function'
+            ? window.prompt('Reason for the capacity override:') : '';
+          if (!reason || reason.trim().length < 3) {
+            showMessage(message, 'A capacity override needs a reason.', true);
+            return;
+          }
+          try {
+            await api(`/api/events/${event.id}/check-in/walk-in`, {
+              method: 'POST', body: JSON.stringify({ ...payload, override: true, reason: reason.trim() })
+            });
+            walkInForm.reset();
+            await renderDashboard(event, card);
+          } catch (overrideError) { showMessage(message, overrideError.message, true); }
+          return;
+        }
+        showMessage(message, error.message, true);
+      }
+    });
+  }
+}
+
 async function renderDashboard(event, card) {
-  const { guests } = await api(`/api/events/${event.id}/dashboard`);
+  const dashboard = await api(`/api/events/${event.id}/dashboard`);
+  const guests = dashboard.guests || [];
+  const totals = dashboard.totals || {
+    invitedPeople: guests.filter((guest) => !guest.walkIn).reduce((sum, guest) => sum + Number(guest.partyLimit || 0), 0),
+    confirmedPeople: guests.filter((guest) => guest.answer === 'yes').reduce((sum, guest) => sum + Number(guest.partySize || 0), 0),
+    checkedInPeople: guests.reduce((sum, guest) => sum + (guest.checkedInAt ? Number(guest.partySize || 0) : (guest.attendees || []).filter((attendee) => attendee.checkedInAt).length), 0),
+    walkIns: guests.filter((guest) => guest.walkIn).length
+  };
   const counts = {
     invited: guests.length,
+    revoked: guests.filter((guest) => guest.revokedAt !== null).length,
     yes: guests.filter((guest) => guest.answer === 'yes').length,
     no: guests.filter((guest) => guest.answer === 'no').length,
     maybe: guests.filter((guest) => guest.answer === 'maybe').length,
     pending: guests.filter((guest) => !guest.revokedAt && !guest.answer).length,
     people: guests.filter((guest) => guest.answer === 'yes').reduce((sum, guest) => sum + guest.partySize, 0)
   };
-  $('.stats', card).innerHTML = `<div class="stat"><span>INVITED UNITS</span><b>${counts.invited}</b><small>all guest units</small></div><div class="stat"><span>ATTENDING PEOPLE</span><b>${counts.people}</b><small>${counts.yes} attending ${counts.yes === 1 ? 'unit' : 'units'}</small></div><div class="stat"><span>AWAITING REPLY</span><b>${counts.pending}</b><small>no reply yet</small></div><div class="stat"><span>NOT SURE YET</span><b>${counts.maybe}</b><small>maybe replies</small></div><div class="stat"><span>DECLINED</span><b>${counts.no}</b><small>can't attend</small></div>`;
+  const hasCapacity = event.capacity !== null && event.capacity !== undefined;
+  $('.stats', card).innerHTML = `<div class="stats__grid"><div class="stat stat--invited"><span>INVITED UNITS</span><b>${counts.invited}</b><small>${totals.invitedPeople} invited people</small></div><div class="stat stat--attending"><span>ATTENDING PEOPLE</span><b>${totals.confirmedPeople}</b><small>${counts.yes} accepting unit${counts.yes === 1 ? '' : 's'}</small></div><div class="stat stat--pending"><span>AWAITING REPLY</span><b>${counts.pending}</b><small>no response yet</small></div><div class="stat stat--maybe"><span>MAYBE</span><b>${counts.maybe}</b><small>tentative unit${counts.maybe === 1 ? '' : 's'}</small></div><div class="stat stat--declined"><span>DECLINED</span><b>${counts.no}</b><small>not attending</small></div><div class="stat stat--revoked"><span>REVOKED</span><b>${counts.revoked}</b><small>links disabled</small></div></div>${hasCapacity ? `<div class="capacity-summary" aria-label="Event capacity"><span>CAPACITY</span><b>${counts.people}/${event.capacity}</b><small>${Math.max(0, event.capacity - counts.people)} remaining</small></div>` : ''}`;
+  if (currentEventId === null || String(currentEventId) !== String(event.id)) return;
+  renderCheckInPanel(event, card, guests);
   const target = $('.guest-table', card);
+  const printView = $('.print-view', card);
+  if (printView) {
+    printView.replaceChildren();
+    const heading = document.createElement('h1'); heading.textContent = event.title; printView.append(heading);
+    const schedule = document.createElement('p'); schedule.textContent = `${formatEventSchedule(event)} · ${event.location || 'No location'}`; printView.append(schedule);
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Guest unit</th><th>Party</th><th>RSVP</th><th>Check-in</th><th>Walk-in</th><th>Attendees / needs</th></tr></thead><tbody></tbody>';
+    const body = $('tbody', table);
+    for (const guest of guests) {
+      const row = document.createElement('tr');
+      const attendees = (guest.attendees || []).map((item) => [item.name, item.dietary, item.accessibility, item.ageBand].filter(Boolean).join(' / ')).join('; ');
+      for (const value of [guest.name, guest.partySize ?? '—', guest.revokedAt ? 'Revoked' : guest.answer || 'No reply',
+        guest.checkedInAt || 'Not checked in', guest.walkIn ? 'Yes' : 'No', attendees || '—']) {
+        const cell = document.createElement('td'); cell.textContent = value; row.append(cell);
+      }
+      body.append(row);
+    }
+    printView.append(table);
+  }
   if (!guests.length) {
     const emptyState = document.createElement('div');
     emptyState.className = 'notice guest-empty-state';
@@ -847,13 +1374,20 @@ async function renderDashboard(event, card) {
       ['Attendees', attendeeCount > 0 ? `${attendeeCount} named` : '—']
     ]) {
       const cell = document.createElement('td');
+      if (label === 'Attendees') cell.className = 'guest-table__attendees';
       cell.setAttribute('data-label', label);
-      cell.textContent = value;
+      const valueElement = document.createElement('span');
+      valueElement.className = 'guest-table__value';
+      valueElement.textContent = value;
+      cell.append(valueElement);
       row.append(cell);
     }
     const action = document.createElement('td');
-    action.setAttribute('data-label', 'Actions');
+    action.className = 'guest-table__action';
+    action.setAttribute('data-label', 'Action');
     if (!guest.revokedAt) {
+      const actionGroup = document.createElement('div');
+      actionGroup.className = 'guest-table__action-group';
       const linkButton = document.createElement('button');
       linkButton.type = 'button';
       linkButton.className = 'secondary guest-link-retention';
@@ -875,8 +1409,9 @@ async function renderDashboard(event, card) {
           linkButton.disabled = false;
         }
       });
-      action.append(linkButton);
+      actionGroup.append(linkButton);
       const button = document.createElement('button');
+      button.type = 'button';
       button.className = 'danger'; button.textContent = 'Revoke';
       button.addEventListener('click', async () => {
         try {
@@ -884,8 +1419,14 @@ async function renderDashboard(event, card) {
           await renderDashboard(event, card);
         } catch (error) { showMessage($('#global-message'), error.message, true); }
       });
-      action.append(button);
-    } else action.textContent = '—';
+      actionGroup.append(button);
+      action.append(actionGroup);
+    } else {
+      const revokedState = document.createElement('span');
+      revokedState.className = 'guest-table__revoked-state';
+      revokedState.textContent = 'Revoked';
+      action.append(revokedState);
+    }
     row.append(action); tbody.append(row);
   }
   target.replaceChildren(table);
@@ -1237,19 +1778,34 @@ async function showGuest(rsvpToken) {
       return musicAttempt;
     });
     if (invitationSettings.revealMode !== 'envelope') void startInvitationMusic();
-    $('#guest-greeting').textContent = `An invitation for ${data.guest.name}`;
-    $('#guest-title').textContent = data.event.title;
-    $('#guest-details').textContent = 'We’d be delighted if you can join us.';
-    $('#guest-date').textContent = formatInvitationDate(data.event.eventDate);
+    const guestCopy = invitationCopyText(data.event.invitationCopy, data.event, data.guest.name);
+    $('#guest-greeting').textContent = guestCopy.greeting;
+    $('#guest-title').textContent = guestCopy.title;
+    $('#guest-details').textContent = guestCopy.intro;
+    $('#guest-rsvp-title').textContent = guestCopy.rsvpHeading;
+    $('#guest-rsvp-helper').textContent = guestCopy.rsvpHelper;
+    $('.invitation-footnote').textContent = guestCopy.footerNote;
+    const eventStatus = data.event.status || 'active';
+    const statusCopy = eventStatus === 'cancelled'
+      ? `This event has been cancelled.${data.event.statusNote ? ` ${data.event.statusNote}` : ''}`
+      : eventStatus === 'postponed'
+        ? `This event has been postponed.${data.event.statusNote ? ` ${data.event.statusNote}` : ''}${data.event.replacementEventDate ? ` New schedule: ${formatEventSchedule(data.event)}.` : ''}` : '';
+    const statusElement = $('#guest-event-status');
+    statusElement.textContent = statusCopy;
+    statusElement.hidden = !statusCopy;
+    $('#guest-date').textContent = formatEventSchedule(data.event);
     const locationRow = $('#guest-location-row');
     locationRow.hidden = !data.event.location;
     if (data.event.location) $('#guest-location').textContent = data.event.location;
     const deadlineRow = $('#guest-deadline-row');
     deadlineRow.hidden = !data.event.rsvpDeadline;
     if (data.event.rsvpDeadline) {
-      $('#guest-deadline').textContent = formatInvitationDeadline(data.event.rsvpDeadline);
+      $('#guest-deadline').textContent = formatInvitationDeadline(data.event.rsvpDeadline, data.event.timezone);
     }
     const form = $('#rsvp-form');
+    form.hidden = eventStatus === 'cancelled';
+    $('#guest-closed').textContent = eventStatus === 'cancelled' ? 'RSVP is unavailable for a cancelled event.' : '';
+    $('#guest-closed').hidden = eventStatus !== 'cancelled' && data.canRespond;
     const partySize = form.elements.partySize;
     const partyLimit = Number(data.guest.partyLimit);
     partySize.max = partyLimit;

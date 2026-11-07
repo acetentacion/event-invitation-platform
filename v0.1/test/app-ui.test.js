@@ -14,6 +14,7 @@ class FakeElement {
     this.disabled = false;
     this.textContent = '';
     this.className = '';
+    this.dataset = {};
     this.style = { setProperty() {} };
     this.attributes = {};
     this.classList = {
@@ -54,6 +55,7 @@ class FakeElement {
     clone.parts = {};
     for (const selector of [
       '#guest-greeting', '#guest-title', '#guest-details', '#guest-date',
+      '#guest-rsvp-title', '#guest-rsvp-helper',
       '#guest-location-row', '#guest-location', '#guest-deadline-row', '#guest-deadline',
       '#guest-capacity', '.invitation-footnote', '.invitation-cover',
       '.reveal-envelope', '.guest-content', '.guest-audio-control',
@@ -83,6 +85,7 @@ class FakeElement {
   setCustomValidity(message) { this.validationMessage = message; }
 
   setAttribute(name, value) { this.attributes[name] = value; }
+  getAttribute(name) { return this.attributes[name]; }
   removeAttribute(name) { delete this.attributes[name]; }
 
   set innerHTML(value) {
@@ -115,12 +118,12 @@ class FakeElement {
       };
       return;
     }
-    if (this.className !== 'card event-card') return;
+    if (!this.className.split(/\s+/).includes('event-card')) return;
     this.parts = {};
     for (const selector of [
-      'h2', '.event-breadcrumb-title', '.response-state', '.publication-status',
-      '.event-meta', '.stats', '.event-actions', '.publish',
-      '.add', '.bulk-add', '.guest-actions', '.toggle', '.refresh', '.guest-form-slot', '.guest-table',
+      'h2', '.event-breadcrumb-title', '.event-status', '.response-state', '.publication-status',
+      '.event-meta', '.stats', '.event-actions', '.event-status-panel', '.event-status-form', '.event-status-message', '.local-message-panel', '.local-message-form', '.publish',
+      '.open-event', '.event-workspace', '.back-events', '.add', '.bulk-add', '.guest-actions', '.guest-toggle', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font', '.theme-image',
@@ -129,12 +132,19 @@ class FakeElement {
       '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
       '.invitation-settings-status', '.invitation-settings-title', '.theme-editor',
-      '.invitation-settings', '.preview-reveal-toggle'
+      '.invitation-settings', '.preview-reveal-toggle', '.invitation-copy-greeting',
+      '.invitation-copy-title', '.invitation-copy-intro', '.invitation-copy-rsvp-heading',
+      '.invitation-copy-rsvp-helper', '.invitation-copy-footer', '.save-invitation-copy',
+      '.invitation-copy-status', '.invitation-copy-title-heading', '.invitation-copy-editor'
     ]) {
       this.parts[selector] = new FakeElement();
       if (selector.startsWith('.')) this.parts[selector].className = selector.slice(1);
     }
     this.parts['.theme-panel'].hidden = true;
+    this.parts['.event-status-form'].elements = {
+      status: Object.assign(new FakeElement(), { value: 'cancelled' }),
+      note: Object.assign(new FakeElement(), { value: '' })
+    };
   }
 }
 
@@ -155,6 +165,7 @@ test('event cards publish drafts and refresh to published state', async () => {
   let copiedInviteLink = '';
   let dashboardGuests = [];
   let published = false;
+  let eventStatus = 'cancelled';
   const fetch = async (url, options = {}) => {
     calls.push({ url, options });
     let data;
@@ -168,7 +179,10 @@ test('event cards publish drafts and refresh to published state', async () => {
           eventDate: '2035-06-15',
           location: 'Sample Park',
           guestMode: 'household',
+          capacity: 100,
           invitationSettings: { revealMode: 'direct', chimeEnabled: false },
+          invitationCopy: { greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: '' },
+          status: eventStatus,
           published,
           responsesOpen: true
         }]
@@ -191,11 +205,19 @@ test('event cards publish drafts and refresh to published state', async () => {
       data = { guests };
     } else if (/^\/api\/guests\/\d+\/invite-link$/.test(url)) {
       data = { inviteUrl: '/rsvp/synthetic-bulk-token-1' };
+    } else if (/^\/api\/guests\/\d+\/revoke$/.test(url) && options.method === 'POST') {
+      dashboardGuests[0].revokedAt = '2035-01-01T00:00:00.000Z';
+      data = { guest: dashboardGuests[0] };
     } else if (url === '/api/events/7/publish' && options.method === 'POST') {
       published = true;
       data = { event: { id: 7, published: true } };
+    } else if (url === '/api/events/7/status' && options.method === 'POST') {
+      eventStatus = JSON.parse(options.body).status;
+      data = { event: { id: 7, status: eventStatus, statusNote: '' } };
     } else if (url === '/api/events/7/invitation' && options.method === 'PUT') {
       data = { invitationSettings: JSON.parse(options.body) };
+    } else if (url === '/api/events/7/invitation-copy' && options.method === 'PUT') {
+      data = { invitationCopy: JSON.parse(options.body) };
     } else {
       throw new Error(`Unexpected request: ${url}`);
     }
@@ -225,24 +247,38 @@ test('event cards publish drafts and refresh to published state', async () => {
     await new Promise((resolve) => setImmediate(resolve));
   }
   let card = events.children[0];
+  assert.ok(card.classList.contains('event-card--cancelled'));
+  assert.equal(card.parts['.guest-table'].children.length, 0, 'event list does not render guest details before selection');
+  card.parts['.open-event'].listeners.get('click')();
+  for (let attempt = 0; attempt < 20 && card.parts['.guest-table'].children.length === 0; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(card.parts['.open-event'].textContent, 'Manage event');
   assert.ok(card.parts['.event-actions'].children.includes(card.parts['.theme-toggle']), 'customize action is in the event header');
   assert.deepEqual(card.parts['.stats'].afterElements, [card.parts['.theme-editor']], 'editor is before the guest list');
   const guestActions = card.parts['.publish'].afterElements[0];
   assert.equal(guestActions.attributes['aria-label'], 'Add guests');
   assert.deepEqual(guestActions.children, [card.guestActionButtons.single, card.guestActionButtons.bulk]);
-  card.parts['.theme-toggle'].listeners.get('click')();
-  assert.equal(card.parts['.theme-panel'].hidden, false, 'theme toggle opens the editor');
-  assert.equal(card.parts['.theme-panel'].scrolledIntoView, true, 'opened settings are brought into view');
-  card.parts['.theme-toggle'].listeners.get('click')();
-  assert.equal(card.parts['.theme-panel'].hidden, true, 'event-header action closes the editor');
-  const previewCard = card.parts['.invitation-preview'].querySelector('.invitation-card');
+  let previewCard = card.parts['.invitation-preview'].querySelector('.invitation-card');
   assert.equal(previewCard.parts['#guest-capacity'].textContent, 'You can include up to 4 people in your reply.');
   assert.equal(previewCard.parts['.guest-content'].hidden, false);
   assert.equal(previewCard.parts['.reveal-envelope'].hidden, true);
   assert.equal(card.parts['.preview-reveal-toggle'].hidden, true);
   assert.equal(card.parts['.invitation-reveal-mode'].value, 'direct');
   assert.equal(card.parts['.invitation-chime-enabled'].checked, false);
+  assert.equal(card.parts['.invitation-copy-title'].value, '');
   assert.equal(card.parts['.publication-status'].textContent, 'Draft');
+  const lifecycleStatus = card.parts['.event-status'].children[0];
+  assert.equal(lifecycleStatus.textContent, 'Cancelled');
+  assert.equal(lifecycleStatus.hidden, false);
+  for (const selector of ['.publish', '.add', '.bulk-add', '.export', '.print', '.guest-toggle', '.refresh', '.toggle', '.theme-toggle', '.event-status-panel', '.local-message-panel']) {
+    assert.ok(card.parts[selector], `cancelled cards retain the ${selector} control`);
+  }
+  for (const selector of ['.publish', '.add', '.bulk-add', '.export', '.print', '.guest-toggle', '.refresh', '.toggle', '.theme-toggle']) {
+    assert.equal(card.parts[selector].disabled, true, `cancelled ${selector} control is disabled`);
+  }
+  assert.equal(card.parts['.event-status-form'].elements.status.disabled, false, 'status recovery remains available');
+  assert.ok(card.parts['.event-actions'].children.some((control) => control.className === 'edit secondary'), 'cancelled cards retain the edit control');
   assert.equal(card.parts['.publish'].hidden, false);
   assert.match(card.html, /class="event-topbar"/);
   assert.match(card.html, /class="event-heading"/);
@@ -250,15 +286,31 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.match(card.html, /class="event-actions"/);
   assert.equal(card.parts['.event-breadcrumb-title'].textContent, 'Sample gathering');
   assert.equal(card.parts['.response-state'].textContent, 'RSVPs open');
-  assert.match(card.parts['.stats'].html, /INVITED UNITS/);
-  assert.match(card.parts['.stats'].html, /ATTENDING PEOPLE/);
-  assert.match(card.parts['.stats'].html, /AWAITING REPLY/);
-  assert.match(card.parts['.stats'].html, /NOT SURE YET/);
-  assert.match(card.parts['.stats'].html, /DECLINED/);
+  assert.match(card.parts['.stats'].html, /class="stats__grid"/);
+  for (const label of ['INVITED UNITS', 'ATTENDING PEOPLE', 'AWAITING REPLY', 'MAYBE', 'DECLINED', 'REVOKED']) {
+    assert.match(card.parts['.stats'].html, new RegExp(`<span>${label}</span>`));
+  }
+  assert.match(card.parts['.stats'].html, /class="capacity-summary"/);
   const emptyState = card.parts['.guest-table'].children[0];
   assert.match(emptyState.children[0].textContent, /No guest units yet.*private RSVP link/i);
   assert.match(emptyState.children[0].textContent, /local outbox; no email is sent/i);
   assert.equal(emptyState.children[1].textContent, 'Add first guest unit');
+
+  card.parts['.event-status-form'].elements.status.value = 'active';
+  await card.parts['.event-status-form'].listeners.get('submit')({
+    preventDefault() {}, currentTarget: card.parts['.event-status-form']
+  });
+  card = events.children[0];
+  previewCard = card.parts['.invitation-preview'].querySelector('.invitation-card');
+  assert.equal(card.classList.contains('event-card--cancelled'), false, 'reactivated card is no longer muted');
+  for (const selector of ['.publish', '.add', '.bulk-add', '.export', '.print', '.guest-toggle', '.refresh', '.toggle', '.theme-toggle']) {
+    assert.equal(card.parts[selector].disabled, false, `reactivated ${selector} control is enabled`);
+  }
+  card.parts['.theme-toggle'].listeners.get('click')();
+  assert.equal(card.parts['.theme-panel'].hidden, false, 'theme toggle opens the editor');
+  assert.equal(card.parts['.theme-panel'].scrolledIntoView, true, 'opened settings are brought into view');
+  card.parts['.theme-toggle'].listeners.get('click')();
+  assert.equal(card.parts['.theme-panel'].hidden, true, 'event-header action closes the editor');
 
   const revealMode = card.parts['.invitation-reveal-mode'];
   revealMode.value = 'envelope';
@@ -295,6 +347,16 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.deepEqual(JSON.parse(invitationCall.options.body), {
     revealMode: 'envelope', chimeEnabled: true, revealMotion: 'slide-up', celebration: 'leaves'
   });
+  card.parts['.invitation-copy-title'].value = '<A special evening>';
+  card.parts['.invitation-copy-title'].listeners.get('input')();
+  assert.equal(previewCard.parts['#guest-title'].textContent, '<A special evening>');
+  card.parts['.invitation-copy-greeting'].value = 'Welcome';
+  card.parts['.invitation-copy-greeting'].listeners.get('input')();
+  assert.equal(previewCard.parts['#guest-greeting'].textContent, 'Welcome');
+  await card.parts['.save-invitation-copy'].listeners.get('click')();
+  const copyCall = calls.find((call) => call.url === '/api/events/7/invitation-copy');
+  assert.equal(copyCall.options.method, 'PUT');
+  assert.equal(JSON.parse(copyCall.options.body).title, '<A special evening>');
 
   await card.parts['.publish'].listeners.get('click')();
 
@@ -336,7 +398,7 @@ test('event cards publish drafts and refresh to published state', async () => {
   await card.parts['.next-steps-outbox'].listeners.get('click')();
   assert.equal(getElement('#outbox').hidden, false);
   assert.ok(calls.some((call) => call.url === '/api/outbox'));
-  assert.equal(calls.filter((call) => call.url === '/api/events').length, 2);
+  assert.equal(calls.filter((call) => call.url === '/api/events').length, 3);
 
   const bulkButton = card.guestActionButtons.bulk;
   assert.ok(bulkButton, 'host can open the bulk invite form');
@@ -386,14 +448,29 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.equal(bulkLinks.children[1].children.length, 2, 'every guest receives a retained private link');
   assert.ok(bulkLinks.children[1].children.every((item) => item.children[1].href.startsWith('http://localhost/rsvp/')));
   const firstGuestRow = card.parts['.guest-table'].children[0].parts.tbody.children[0];
-  const actionCell = firstGuestRow.children[4];
+  const actionCell = firstGuestRow.children[5];
+  assert.equal(actionCell.children.length, 1, 'active actions share one action group');
+  assert.equal(actionCell.children[0].className, 'guest-table__action-group');
+  assert.equal(firstGuestRow.children[2].children[0].className, 'guest-table__value');
+  assert.equal(firstGuestRow.children[4].getAttribute('data-label'), 'Attendees');
+  assert.equal(actionCell.getAttribute('data-label'), 'Action');
   const retainedLink = actionCell.children[0];
-  await retainedLink.listeners.get('click')();
+  const linkButton = retainedLink.children[0];
+  await linkButton.listeners.get('click')();
   assert.equal(copiedInviteLink, 'http://localhost/rsvp/synthetic-bulk-token-1');
-  assert.equal(retainedLink.textContent, 'Link');
-  assert.equal(actionCell.children.length, 2, 'link button and revoke action remain compact');
+  assert.equal(linkButton.textContent, 'Link');
+  assert.equal(retainedLink.children.length, 2, 'link button and revoke action remain compact');
   assert.equal(getElement('#invite-link-toast').textContent, 'North Household\'s invitation link copied.');
   assert.equal(actionCell.children.some((element) => element.tagName === 'a'), false, 'the URL is not shown in the guest list');
+  await retainedLink.children[1].listeners.get('click')();
+  for (let attempt = 0; attempt < 20 && card.parts['.guest-table'].children[0].parts.tbody.children[0] === firstGuestRow; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  const revokedActionCell = card.parts['.guest-table'].children[0].parts.tbody.children[0].children[5];
+  assert.equal(revokedActionCell.children.length, 1, 'revoked rows keep a single status element');
+  assert.equal(revokedActionCell.children[0].className, 'guest-table__revoked-state');
+  assert.equal(revokedActionCell.children[0].textContent, 'Revoked');
+  assert.equal(revokedActionCell.querySelector('.guest-table__action-group'), undefined, 'revoked rows have no action group');
 });
 
 test('guest invitation starts configured music on open and offers retry only when blocked', async () => {
@@ -622,7 +699,7 @@ test('guest RSVP renders API details and persists selected answer and party size
   assert.equal(form.elements.partySize.disabled, true);
   await form.listeners.get('submit')({ preventDefault() {}, currentTarget: form });
   const firstSave = calls.find((call) => call.options.method === 'PUT');
-  assert.deepEqual(JSON.parse(firstSave.options.body), { answer: 'no', partySize: 0 });
+  assert.deepEqual(JSON.parse(firstSave.options.body), { answer: 'no', partySize: 0, attendees: [] });
   assert.equal(form.hidden, true);
   assert.equal(getElement('#rsvp-confirmation').hidden, false);
   assert.match(getElement('#rsvp-confirmation-copy').textContent, /saved/);
@@ -636,7 +713,7 @@ test('guest RSVP renders API details and persists selected answer and party size
   await form.listeners.get('submit')({ preventDefault() {}, currentTarget: form });
   const saves = calls.filter((call) => call.options.method === 'PUT');
   assert.equal(saves.length, 2);
-  assert.deepEqual(JSON.parse(saves[1].options.body), { answer: 'yes', partySize: 3 });
+  assert.deepEqual(JSON.parse(saves[1].options.body), { answer: 'yes', partySize: 3, attendees: [] });
   assert.equal(form.hidden, true);
   assert.equal(getElement('#edit-rsvp').hidden, false);
 });

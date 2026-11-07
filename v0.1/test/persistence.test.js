@@ -7,7 +7,7 @@ const path = require('node:path');
 const test = require('node:test');
 const { DatabaseSync } = require('node:sqlite');
 const {
-  Store, DEFAULT_THEME, DEFAULT_INVITATION_SETTINGS
+  Store, DEFAULT_THEME, DEFAULT_INVITATION_SETTINGS, DEFAULT_INVITATION_COPY
 } = require('../persistence');
 
 test('adds default theme and invitation settings to an existing event database', (t) => {
@@ -41,8 +41,18 @@ test('adds default theme and invitation settings to an existing event database',
 
   const event = store.getEventForHost(7, 3);
   assert.equal(event.title, 'Legacy event');
+  assert.equal(event.eventStartTime, null);
+  assert.equal(event.eventEndTime, null);
+  assert.equal(event.timezone, null);
+  assert.equal(event.status, 'active');
+  assert.equal(event.statusNote, null);
+  assert.deepEqual(
+    legacyColumns(store).filter((name) => name.startsWith('event_') || name === 'event_timezone'),
+    ['event_date', 'event_start_time', 'event_end_time', 'event_timezone']
+  );
   assert.deepEqual(event.theme, DEFAULT_THEME);
   assert.deepEqual(event.invitationSettings, DEFAULT_INVITATION_SETTINGS);
+  assert.deepEqual(event.invitationCopy, DEFAULT_INVITATION_COPY);
   assert.equal(
     store.db.prepare('SELECT theme_json FROM events WHERE id = 7').get().theme_json,
     JSON.stringify(DEFAULT_THEME)
@@ -52,6 +62,119 @@ test('adds default theme and invitation settings to an existing event database',
       .invitation_settings_json,
     JSON.stringify(DEFAULT_INVITATION_SETTINGS)
   );
+  assert.equal(
+    store.db.prepare('SELECT invitation_copy_json FROM events WHERE id = 7').get()
+      .invitation_copy_json,
+    JSON.stringify(DEFAULT_INVITATION_COPY)
+  );
+});
+
+function legacyColumns(store) {
+  return store.db.prepare('PRAGMA table_info(events)').all().map((column) => column.name);
+}
+
+test('adds nullable email and invite URL columns to legacy guest units without rewriting records', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gatherly-guest-migration-'));
+  const filename = path.join(directory, 'legacy.sqlite');
+  const legacyDb = new DatabaseSync(filename);
+  legacyDb.exec(`
+    CREATE TABLE hosts (
+      id INTEGER PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE events (
+      id INTEGER PRIMARY KEY,
+      host_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      event_date TEXT NOT NULL,
+      location TEXT NOT NULL DEFAULT '',
+      guest_mode TEXT NOT NULL,
+      rsvp_deadline TEXT,
+      responses_open INTEGER NOT NULL DEFAULT 1,
+      reopened_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE guest_units (
+      id INTEGER PRIMARY KEY,
+      event_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      party_limit INTEGER NOT NULL,
+      token_hash TEXT NOT NULL UNIQUE,
+      revoked_at TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE rsvps (
+      id INTEGER PRIMARY KEY,
+      guest_unit_id INTEGER NOT NULL UNIQUE,
+      answer TEXT NOT NULL,
+      party_size INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE email_outbox (
+      id INTEGER PRIMARY KEY,
+      guest_unit_id INTEGER NOT NULL,
+      recipient TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      body TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    INSERT INTO events (id, host_id, title, event_date, guest_mode, created_at)
+      VALUES (7, 1, 'Legacy event', '2026-04-05', 'individual', '2026-01-01');
+    INSERT INTO guest_units (id, event_id, name, party_limit, token_hash, created_at)
+      VALUES (9, 7, 'Historical guest', 1, 'legacy-token-hash', '2026-01-02');
+    INSERT INTO rsvps (guest_unit_id, answer, party_size, updated_at)
+      VALUES (9, 'yes', 1, '2026-01-03');
+  `);
+  legacyDb.close();
+
+  const store = new Store(filename);
+  try {
+    const columns = store.db.prepare('PRAGMA table_info(guest_units)').all();
+    assert.equal(columns.find((column) => column.name === 'email').notnull, 0);
+    assert.equal(columns.find((column) => column.name === 'invite_url').notnull, 1);
+    const guest = store.db.prepare(
+      'SELECT id, name, email, invite_url FROM guest_units'
+    ).get();
+    assert.deepEqual(
+      { id: guest.id, name: guest.name, email: guest.email, invite_url: guest.invite_url },
+      { id: 9, name: 'Historical guest', email: null, invite_url: '' }
+    );
+    assert.equal(store.dashboardGuests(7, 1)[0].email, null);
+    assert.equal(store.dashboardGuests(7, 1)[0].walkIn, 0);
+    assert.equal(store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'check_ins'").get().name, 'check_ins');
+    assert.equal(store.guestInviteLink(9, 1).inviteUrl, '');
+    assert.deepEqual(store.eventRecipients(7, 1, 'all'), []);
+  } finally {
+    store.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('persists reversible unit and attendee check-ins without changing RSVP data', () => {
+  const store = new Store(':memory:');
+  try {
+    const hostId = Number(store.createHost('host@example.test', 'hash', '2026-01-01'));
+    const eventId = Number(store.createEvent(hostId, {
+      title: 'Door check-in', eventDate: '2026-04-05', location: '', guestMode: 'household', rsvpDeadline: null
+    }, '2026-01-01'));
+    const guestId = Number(store.createGuestAndOutbox({
+      eventId, name: 'Door household', email: 'door@example.test', partyLimit: 3,
+      tokenHash: 'check-in-token', inviteUrl: '/rsvp/check-in-token'
+    }, { recipient: 'door@example.test', subject: 'Invite', body: 'Invite' }, '2026-01-01'));
+    store.saveRsvp(guestId, 'yes', 2, '2026-01-02', [{ name: 'Named guest' }]);
+    const attendeeId = store.attendeesForGuest(guestId)[0].id;
+    const checkedAt = '2026-04-05T18:00:00.000Z';
+    assert.equal(store.checkInTarget(eventId, hostId, { attendeeId }, checkedAt, checkedAt).id > 0, true);
+    assert.equal(store.checkInTarget(eventId, hostId, { attendeeId }, checkedAt, checkedAt).duplicate, true);
+    assert.equal(store.reverseCheckIn(eventId, hostId, { attendeeId }, '2026-04-05T18:01:00.000Z'), 1);
+    assert.equal(store.getGuestByToken('check-in-token').answer, 'yes');
+    assert.equal(store.getGuestByToken('check-in-token').attendees[0].name, 'Named guest');
+    assert.equal(store.checkInState(eventId, hostId)[0].reversedAt, '2026-04-05T18:01:00.000Z');
+  } finally {
+    store.close();
+  }
 });
 
 test('persists and reads event invitation settings', () => {
@@ -83,6 +206,27 @@ test('persists and reads event invitation settings', () => {
     assert.deepEqual(store.getEventForHost(eventId, hostId).invitationSettings, {
       ...DEFAULT_INVITATION_SETTINGS, revealMode: 'envelope', chimeEnabled: true
     });
+  } finally {
+    store.close();
+  }
+});
+
+test('persists invitation copy separately from presentation settings', () => {
+  const store = new Store(':memory:');
+  try {
+    const hostId = Number(store.createHost('copy-host@example.test', 'hash', '2026-01-01'));
+    const eventId = Number(store.createEvent(hostId, {
+      title: 'Copy event', eventDate: '2026-04-05', location: '', guestMode: 'individual', rsvpDeadline: null
+    }, '2026-01-01'));
+    const copy = {
+      greeting: 'Welcome', title: 'A new title', intro: 'Join us.',
+      rsvpHeading: 'Can you come?', rsvpHelper: 'Choose one.', footerNote: 'See you soon.'
+    };
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, DEFAULT_INVITATION_COPY);
+    assert.equal(store.updateEventInvitationCopy(eventId, hostId, copy), 1);
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, copy);
+    assert.deepEqual(store.getGuestByToken('missing-copy-token'), undefined);
+    assert.equal(store.updateEventInvitationCopy(eventId, hostId + 1, copy), 0);
   } finally {
     store.close();
   }

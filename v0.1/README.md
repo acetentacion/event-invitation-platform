@@ -8,15 +8,26 @@ It uses Node.js built-ins and SQLite; there are no external services or dependen
 - First-run local host setup with scrypt password hashes and cookie sessions.
 - Event creation with individual or household/group RSVP mode.
 - Draft/published event status and a host publish control.
+- Hosts can mark a published event active, postponed, or cancelled with an optional organizer note. Published guest links remain readable; postponed invitations show the note, while cancelled invitations keep existing RSVP records visible to the host and block new RSVP writes.
+- Hosts can edit an event's title, date, start time, optional end time, timezone, location, RSVP deadline, and optional capacity from the dashboard. Capacity is enforced against attending RSVP party sizes and exposes remaining places in host event reads. Supported timezones come from the Node runtime's IANA timezone list.
+- RSVP deadlines without an offset are interpreted as wall-clock values in the selected event timezone, stored as UTC, and rejected when the timezone is missing or the local time falls in a DST gap/overlap. Legacy ISO timestamps with an explicit offset or `Z` remain accepted. Host and guest displays include timezone context.
+- Draft events do not expose usable guest invitation API responses; publish an event before sharing its private RSVP links.
 - Unique, revocable bearer links; household party limits are checked by the server. Each guest unit stores its RSVP URL in `guest_units.invite_url`, so `GET /api/guests/:id/invite-link` reads the retained link directly (404 for unknown or other-host guests, 410 if revoked). The outbox body is a captured message, not the source of truth for the link.
 - Hosts can paste up to 100 tab-separated guest rows at once; each RSVP link and local outbox message is created atomically after validation. A single invalid row rejects the entire batch. Duplicate emails within a batch or against an existing guest unit for the same event are rejected.
 - Guests can submit or revise yes/no/maybe and party size.
 - Server-enforced deadline closure and explicit host reopen/close.
 - Dashboard counts reflect the latest persisted RSVP, including attending people.
 - Invitation email content goes to a SQLite-backed local outbox. Nothing is sent.
+- Hosts can capture targeted local message previews for all guests, pending/no reply, attending/yes, maybe, or declined recipients. Revoked guests are excluded by default; subjects and messages have sensible local defaults, and no email is sent.
 - Event themes persist in SQLite with classic defaults, owner-only updates, and theme data in authenticated event and guest invitation reads. Optional PNG, JPEG, or WebP base64 cover images are limited to 1 MiB decoded; no image is uploaded to a cloud service.
 - Invitation presentation settings persist per event with owner-only updates. The default is direct reveal with reveal motion `none`, celebration `off`, and the optional built-in chime disabled. Reveal motion accepts `none`, `fade`, or `slide-up`; celebration accepts `off`, `sparkle`, or `leaves`. Falling leaves and sparkle are decorative and disabled for visitors who prefer reduced motion. The chime setting only enables a built-in generated chime; no uploaded or third-party audio is used by this backend contract.
 - Relational records persist in SQLite behind `persistence.js`.
+- Legacy databases whose `guest_units` table predates email support are migrated additively: `email` is added as nullable and existing rows remain `NULL` because historical addresses cannot be safely recovered or inferred. New invitations still require validated synthetic email addresses, and duplicate checks remain enforced for supplied addresses. Legacy rows remain usable through their existing bearer token and RSVP data; their missing invite URL is reported as unavailable, and they are omitted from local message-recipient previews rather than receiving a fabricated identity.
+- Hosts can download a CSV guest export containing RSVP and attendee detail, and can open a print-friendly door/catering list from each event card. Both workflows are authenticated host actions; guest invitation routes do not expose them.
+- Event-day check-in is available to the authenticated event owner at `GET /api/events/:id/check-in`, `POST /api/events/:id/check-in`, and `POST /api/events/:id/check-in/reverse`. Check in a whole guest unit or a named RSVP attendee, reverse either state, and read live invited, confirmed, checked-in, and walk-in totals. `POST /api/events/:id/check-in/walk-in` registers and checks in a synthetic walk-in attendee. Duplicate active check-ins, cross-event/owner targets, and cancelled-event mutations are rejected.
+- Walk-ins consume event capacity. A full event returns `409`; a host can explicitly retry with `override: true` and a reason. The UI confirms the override and asks for the reason. CSV and print door lists include walk-in state and check-in timestamps for units and named attendees.
+- A postponed event can persist a replacement date, start/end time, and IANA timezone in the status request's `replacement` object. RSVPs remain open, guest and host schedule displays use the replacement schedule, and a local update preview is captured for active recipients. Legacy status-only postponement requests remain compatible.
+- Check-in state is stored in an additive, reversible `check_ins` table. Existing RSVP and attendee rows are preserved; legacy databases receive the table and a `guest_units.walk_in` marker without rewriting existing records. Walk-ins are synthetic local guest units and do not receive invitation links or email.
 
 The host API accepts a complete theme object at `PUT /api/events/:id/theme`:
 `preset`, `primaryColor`, `backgroundColor`, `textColor`, `fontFamily`, and `coverImage`.
@@ -32,6 +43,14 @@ at `PUT /api/events/:id/invitation`. The current `invitationSettings` object is 
 event list/detail and public guest invitation responses. Falling leaves are decorative and
 disabled for visitors who prefer reduced motion. The chime setting only enables a built-in
 generated chime; no uploaded or third-party audio is used by this backend contract.
+
+Invitation copy is stored separately from presentation settings and is returned as
+`invitationCopy` in event and guest invitation reads. Hosts save exactly
+`{ "greeting": string, "title": string, "intro": string, "rsvpHeading": string, "rsvpHelper": string, "footerNote": string }`
+through `PUT /api/events/:id/invitation-copy`. Values are trimmed and limited to 120, 100,
+500, 100, 200, and 300 characters respectively. A blank title falls back to the event title;
+all copy is rendered as text rather than HTML. Older events receive blank copy defaults and
+older two-key invitation settings remain readable.
 
 ## Safety and limitations
 

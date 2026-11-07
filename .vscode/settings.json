@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^Set-Location 'c:\\\\Users\\\\Ace\\\\Documents\\\\event-invitation-platform\\\\v0\\.1'; node --test --test-reporter=tap test/api\\.test\\.js test/app\\.test\\.js$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

@@ -83,6 +83,7 @@ test('host to household guest RSVP and revised persisted totals', async (t) => {
   });
   assert.equal(createdEvent.response.status, 201, JSON.stringify(createdEvent.data));
   const eventId = createdEvent.data.event.id;
+    await f.request(`/api/events/${eventId}/publish`, { method: 'POST', body: '{}' });
   const createdGuest = await f.request(`/api/events/${eventId}/guests`, {
     method: 'POST',
     body: JSON.stringify({
@@ -145,6 +146,7 @@ test('server deadline closure, host reopen, and manual close are enforced', asyn
     })
   });
   const eventId = event.data.event.id;
+  await f.request(`/api/events/${eventId}/publish`, { method: 'POST', body: '{}' });
   const guest = await f.request(`/api/events/${eventId}/guests`, {
     method: 'POST',
     body: JSON.stringify({ name: 'Sample Guest', email: 'guest@example.test' })
@@ -185,6 +187,7 @@ test('individual guest party limits and link revocation are enforced', async (t)
       guestMode: 'individual'
     })
   });
+  await f.request(`/api/events/${event.data.event.id}/publish`, { method: 'POST', body: '{}' });
   const guest = await f.request(`/api/events/${event.data.event.id}/guests`, {
     method: 'POST',
     body: JSON.stringify({

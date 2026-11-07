@@ -70,9 +70,13 @@
             <label>Event name <input name="title" maxlength="100" required></label>
             <div class="columns">
               <label>Event date <input name="eventDate" type="date" required></label>
+              <label>Start time <input name="eventStartTime" type="time" required></label>
+              <label>End time (optional) <input name="eventEndTime" type="time"></label>
+              <label>Timezone <select name="timezone" required></select></label>
               <label>RSVP deadline <input name="rsvpDeadline" type="datetime-local"></label>
             </div>
             <label>Location (optional) <input name="location" maxlength="200"></label>
+            <label>Event capacity (optional) <input name="capacity" type="number" min="1" max="100000" inputmode="numeric"></label>
             <label>RSVP unit
               <select name="guestMode"><option value="individual">Individual</option><option value="household">Household / group</option></select>
             </label>
@@ -139,8 +143,9 @@
             <div class="invitation-rsvp__heading">
               <p class="section-kicker">KINDLY REPLY</p>
               <h2 id="guest-rsvp-title">Will you be there?</h2>
-              <p>Choose the response that works for you.</p>
+              <p id="guest-rsvp-helper">Choose the response that works for you.</p>
             </div>
+            <p id="guest-event-status" class="guest-event-status" role="status" hidden></p>
             <p id="guest-closed" class="guest-closed" role="status" hidden></p>
             <form id="rsvp-form">
               <fieldset class="rsvp-choices" id="guest-response-options" tabindex="-1">

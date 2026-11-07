@@ -62,16 +62,23 @@ async function fixture(t, initialTime = '2026-01-01T12:00:00.000Z') {
 }
 
 async function createEvent(f, cookie, options = {}) {
+  const { draft, ...eventOptions } = options;
   const response = await f.jsonRequest('/api/events', 'POST', {
     title: 'Sample gathering',
     eventDate: '2026-01-10',
     location: 'Local test venue',
     guestMode: 'household',
     rsvpDeadline: '2026-01-02T12:00:00.000Z',
-    ...options
+    ...eventOptions
   }, cookie);
   assert.equal(response.status, 201);
-  return (await response.json()).event;
+  const event = (await response.json()).event;
+  if (!draft) {
+    const published = await f.jsonRequest(`/api/events/${event.id}/publish`, 'POST', {}, cookie);
+    assert.equal(published.status, 200);
+    return (await published.json()).event;
+  }
+  return event;
 }
 
 test('serves the public UI assets and exposes auth, dashboard, outbox, and guest routes', async (t) => {
@@ -132,6 +139,76 @@ test('serves the public UI assets and exposes auth, dashboard, outbox, and guest
   assert.equal((await published.json()).event.published, true);
 });
 
+test('tracks household and attendee check-in, reversals, walk-ins, ownership, cancellation, and totals', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const guestResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Check-in Household', email: 'checkin@example.test', partyLimit: 4
+  }, cookie);
+  const guest = await guestResponse.json();
+  const token = guest.inviteUrl.split('/').pop();
+  await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2,
+    attendees: [{ name: 'Alex Morgan' }, { name: 'Sam Morgan', ageBand: 'child' }]
+  });
+
+  let dashboard = await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json();
+  const attendeeIds = dashboard.guests[0].attendees.map((attendee) => attendee.id);
+  assert.deepEqual(dashboard.totals, {
+    invitedPeople: 4, confirmedPeople: 2, checkedInPeople: 0, walkIns: 0, walkInPeople: 0
+  });
+  const checkedIn = await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    guestId: guest.guest.id
+  }, cookie);
+  assert.equal(checkedIn.status, 200);
+  assert.equal((await checkedIn.json()).totals.checkedInPeople, 2);
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    guestId: guest.guest.id
+  }, cookie)).status, 409);
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    attendeeId: attendeeIds[0]
+  }, cookie)).status, 409);
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in/reverse`, 'POST', {
+    guestId: guest.guest.id
+  }, cookie)).status, 200);
+  const attendeeCheckIn = await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    attendeeId: attendeeIds[0]
+  }, cookie);
+  assert.equal(attendeeCheckIn.status, 200);
+  assert.equal((await attendeeCheckIn.json()).totals.checkedInPeople, 1);
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in/reverse`, 'POST', {
+    attendeeId: attendeeIds[0]
+  }, cookie)).status, 200);
+
+  const walkIn = await f.jsonRequest(`/api/events/${event.id}/check-in/walk-in`, 'POST', {
+    name: 'Door Guest', attendeeName: 'Door Guest'
+  }, cookie);
+  assert.equal(walkIn.status, 201);
+  dashboard = await (await f.request(`/api/events/${event.id}/check-in`, {}, cookie)).json();
+  assert.deepEqual(dashboard.totals, {
+    invitedPeople: 4, confirmedPeople: 3, checkedInPeople: 1, walkIns: 1, walkInPeople: 1
+  });
+  assert.equal(dashboard.guests.find((item) => item.walkIn).attendees[0].checkedInAt !== null, true);
+
+  const otherHost = Number(f.store.createHost(
+    'checkin-other@example.test', hashPassword('another-local-password'), '2026-01-01T12:00:00.000Z'
+  ));
+  assert.ok(otherHost > 1);
+  const otherLogin = await f.jsonRequest('/api/auth/login', 'POST', {
+    email: 'checkin-other@example.test', password: 'another-local-password'
+  });
+  const otherCookie = otherLogin.headers.get('set-cookie').split(';', 1)[0];
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    guestId: guest.guest.id
+  }, otherCookie)).status, 404);
+
+  await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', { status: 'cancelled' }, cookie);
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/check-in`, 'POST', {
+    guestId: guest.guest.id
+  }, cookie)).status, 409);
+});
+
 test('deadline closes by default; only a post-deadline host reopen restores RSVP writes', async (t) => {
   const f = await fixture(t, '2026-01-01T12:00:00.000Z');
   const cookie = await f.register();
@@ -166,6 +243,186 @@ test('deadline closes by default; only a post-deadline host reopen restores RSVP
   await f.jsonRequest(`/api/events/${event.id}/responses`, 'POST', { open: false }, cookie);
   guestView = await (await f.request(`/api/guest/${token}`)).json();
   assert.equal(guestView.canRespond, false);
+});
+
+test('hosts can postpone or cancel published events without losing RSVP records', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { guestMode: 'individual' });
+  const created = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Status Guest', email: 'status@example.test'
+  }, cookie);
+  const invite = await created.json();
+  const token = invite.inviteUrl.split('/').pop();
+  assert.equal((await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 1
+  })).status, 200);
+
+  const postponed = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
+    status: 'postponed', note: 'A new date will follow.'
+  }, cookie);
+  assert.equal(postponed.status, 200);
+  const postponedGuest = await (await f.request(`/api/guest/${token}`)).json();
+  assert.equal(postponedGuest.event.status, 'postponed');
+  assert.equal(postponedGuest.event.statusNote, 'A new date will follow.');
+  assert.equal(postponedGuest.canRespond, true);
+
+  const cancelled = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
+    status: 'cancelled', note: 'This gathering will not go ahead.'
+  }, cookie);
+  assert.equal(cancelled.status, 200);
+  const cancelledGuest = await (await f.request(`/api/guest/${token}`)).json();
+  assert.equal(cancelledGuest.event.status, 'cancelled');
+  assert.equal(cancelledGuest.canRespond, false);
+  const blocked = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'no', partySize: 0
+  });
+  assert.equal(blocked.status, 409);
+  const dashboard = await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json();
+  assert.equal(dashboard.guests[0].answer, 'yes');
+  assert.equal(dashboard.guests[0].partySize, 1);
+});
+
+test('local message previews filter active recipients, capture defaults, and enforce ownership', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const guests = [];
+  for (const [name, email] of [['Pending', 'pending@example.test'], ['Yes', 'yes@example.test'], ['Maybe', 'maybe@example.test'], ['Revoked', 'revoked@example.test']]) {
+    const response = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', { name, email, partyLimit: 1 }, cookie);
+    guests.push(await response.json());
+  }
+  await f.jsonRequest(`/api/guest/${guests[1].inviteUrl.split('/').pop()}/rsvp`, 'PUT', { answer: 'yes', partySize: 1 });
+  await f.jsonRequest(`/api/guest/${guests[2].inviteUrl.split('/').pop()}/rsvp`, 'PUT', { answer: 'maybe', partySize: 1 });
+  const revokedId = guests[3].guest.id;
+  assert.equal((await f.jsonRequest(`/api/guests/${revokedId}/revoke`, 'POST', {}, cookie)).status, 200);
+
+  const pending = await f.jsonRequest(`/api/events/${event.id}/messages`, 'POST', {
+    filter: 'pending', subject: 'A quick note', message: 'Please reply when you can.'
+  }, cookie);
+  assert.equal(pending.status, 201);
+  assert.equal((await pending.json()).count, 1);
+  const unrevoked = await f.jsonRequest(`/api/events/${event.id}/messages`, 'POST', { filter: 'unrevoked' }, cookie);
+  assert.equal(unrevoked.status, 201);
+  assert.equal((await unrevoked.json()).count, 3, 'unrevoked selects active guests regardless of RSVP answer');
+  const all = await f.jsonRequest(`/api/events/${event.id}/messages`, 'POST', { filter: 'all' }, cookie);
+  assert.equal((await all.json()).count, 3);
+  const dashboard = await (await f.request(`/api/events/${event.id}/dashboard`, {}, cookie)).json();
+  assert.equal(dashboard.event.revokedUnits, 1);
+  assert.equal(dashboard.event.invitedUnits, 4);
+  assert.equal(dashboard.event.noUnits, 0);
+  const outbox = await (await f.request('/api/outbox', {}, cookie)).json();
+  assert.equal(outbox.messages.filter((message) => message.messageType === 'preview').length, 7);
+  assert.match(outbox.messages.find((message) => message.messageType === 'preview').body, /Local message preview only/);
+
+  const otherHostId = Number(f.store.createHost('messages-other@example.test', hashPassword('another-local-password'), '2026-01-01'));
+  assert.ok(otherHostId > 1);
+  const otherLogin = await f.jsonRequest('/api/auth/login', 'POST', {
+    email: 'messages-other@example.test', password: 'another-local-password'
+  });
+  const otherCookie = otherLogin.headers.get('set-cookie').split(';', 1)[0];
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}/messages`, 'POST', { filter: 'all' }, otherCookie)).status, 404);
+});
+
+test('event schedule validates, persists, reaches guests, and exports only to the host', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, {
+    eventStartTime: '18:30', eventEndTime: '21:00', timezone: 'Asia/Manila'
+  });
+  assert.equal(event.eventStartTime, '18:30');
+  assert.equal(event.eventEndTime, '21:00');
+  assert.equal(event.timezone, 'Asia/Manila');
+  const guestResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Export Household', email: 'export@example.test', partyLimit: 2
+  }, cookie);
+  const invite = await guestResponse.json();
+  const token = invite.inviteUrl.split('/').pop();
+  const guestView = await (await f.request(`/api/guest/${token}`)).json();
+  assert.deepEqual({
+    eventStartTime: guestView.event.eventStartTime,
+    eventEndTime: guestView.event.eventEndTime,
+    timezone: guestView.event.timezone
+  }, { eventStartTime: '18:30', eventEndTime: '21:00', timezone: 'Asia/Manila' });
+  await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2,
+    attendees: [
+      { name: 'Alex Export', dietary: 'vegetarian', accessibility: '', ageBand: 'adult' },
+      { name: 'Sam Export', dietary: '', accessibility: 'step-free', ageBand: 'child' }
+    ]
+  });
+  const csv = await f.request(`/api/events/${event.id}/export`, {}, cookie);
+  assert.equal(csv.status, 200);
+  assert.match(csv.headers.get('content-type'), /text\/csv/);
+  const csvText = await csv.text();
+  assert.match(csvText, /"Guest unit name","Email","RSVP answer"/);
+  assert.match(csvText, /Alex Export; Sam Export/);
+  assert.match(csvText, /"vegetarian"/);
+  assert.equal((await f.request(`/api/events/${event.id}/export`)).status, 401);
+  for (const invalidSchedule of [
+    { eventStartTime: '25:00' },
+    { eventStartTime: '18:30', eventEndTime: '18:30' },
+    { eventStartTime: '18:30', eventEndTime: '19:00', timezone: 'Mars/Olympus' }
+  ]) {
+    const response = await f.jsonRequest('/api/events', 'POST', {
+      title: 'Invalid schedule', eventDate: '2026-01-10', guestMode: 'individual', ...invalidSchedule
+    }, cookie);
+    assert.equal(response.status, 400);
+  }
+});
+
+test('draft guest links stay unavailable, hosts can edit events, and capacity limits RSVPs', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { draft: true, capacity: 3 });
+  const guestOneResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'First Household', email: 'first@example.test', partyLimit: 2
+  }, cookie);
+  const guestOne = await guestOneResponse.json();
+  const tokenOne = guestOne.inviteUrl.split('/').pop();
+  const draftAccess = await f.request(`/api/guest/${tokenOne}`);
+  assert.equal(draftAccess.status, 404);
+  assert.match((await draftAccess.json()).error, /not available until the event is published/i);
+
+  const updated = await f.jsonRequest(`/api/events/${event.id}`, 'PUT', {
+    title: 'Edited gathering', eventDate: '2026-01-12', location: 'Updated venue',
+    rsvpDeadline: '2026-01-03T12:00:00.000Z', capacity: 3
+  }, cookie);
+  assert.equal(updated.status, 200);
+  assert.equal((await updated.json()).event.title, 'Edited gathering');
+  assert.equal((await (await f.request(`/api/events/${event.id}`, {}, cookie)).json()).event.capacity, 3);
+
+  const otherHostId = Number(f.store.createHost(
+    'other@example.test', hashPassword('another-local-password'), '2026-01-01T12:00:00.000Z'
+  ));
+  assert.ok(otherHostId > 1);
+  const otherLogin = await f.jsonRequest('/api/auth/login', 'POST', {
+    email: 'other@example.test', password: 'another-local-password'
+  });
+  const otherCookie = otherLogin.headers.get('set-cookie').split(';', 1)[0];
+  assert.equal((await f.jsonRequest(`/api/events/${event.id}`, 'PUT', {
+    title: 'Should fail', eventDate: '2026-01-12', location: '', capacity: 3
+  }, otherCookie)).status, 404);
+
+  await f.jsonRequest(`/api/events/${event.id}/publish`, 'POST', {}, cookie);
+  const guestTwoResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Second Household', email: 'second@example.test', partyLimit: 2
+  }, cookie);
+  const guestTwo = await guestTwoResponse.json();
+  const tokenTwo = guestTwo.inviteUrl.split('/').pop();
+  assert.equal((await f.jsonRequest(`/api/guest/${tokenOne}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2
+  })).status, 200);
+  const overCapacity = await f.jsonRequest(`/api/guest/${tokenTwo}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2
+  });
+  assert.equal(overCapacity.status, 409);
+  assert.match((await overCapacity.json()).error, /capacity of 3/i);
+  assert.equal((await (await f.request(`/api/events/${event.id}`, {}, cookie)).json()).event.remainingCapacity, 1);
+  await f.jsonRequest(`/api/guest/${tokenOne}/rsvp`, 'PUT', { answer: 'no', partySize: 0 });
+  assert.equal((await f.jsonRequest(`/api/guest/${tokenTwo}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2
+  })).status, 200);
 });
 
 test('bulk guest creation validates every row before capturing any invitations', async (t) => {
@@ -459,6 +716,68 @@ test('persists owner-only invitation presentation settings for hosts and guests'
   );
 });
 
+test('persists validated invitation copy for owners and guests', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const defaults = {
+    greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+  };
+  assert.deepEqual(event.invitationCopy, defaults);
+  const guestResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Copy Guest', email: 'copy-guest@example.test', partyLimit: 1
+  }, cookie);
+  const token = (await guestResponse.json()).inviteUrl.split('/').pop();
+  const copy = {
+    greeting: '  A note for you  ',
+    title: '  <A special evening>  ',
+    intro: 'Join us for dinner.',
+    rsvpHeading: 'Can you join us?',
+    rsvpHelper: 'Please choose a response.',
+    footerNote: 'With love, the hosts.'
+  };
+  const saved = await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', copy, cookie);
+  assert.equal(saved.status, 200);
+  const normalized = {
+    ...copy,
+    greeting: copy.greeting.trim(), title: copy.title.trim()
+  };
+  assert.deepEqual((await saved.json()).invitationCopy, normalized);
+  const hostEvent = (await (await f.request(`/api/events/${event.id}`, {}, cookie)).json()).event;
+  assert.deepEqual(hostEvent.invitationCopy, normalized);
+  const guest = await (await f.request(`/api/guest/${token}`)).json();
+  assert.deepEqual(guest.event.invitationCopy, normalized);
+
+  const invalid = [
+    { ...normalized, greeting: 3 },
+    { ...normalized, intro: 'x'.repeat(501) },
+    { ...normalized, extra: 'nope' },
+    { greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '' }
+  ];
+  for (const value of invalid) {
+    assert.equal(
+      (await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', value, cookie)).status,
+      400
+    );
+  }
+  assert.equal(
+    (await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', normalized)).status,
+    401
+  );
+  const otherHostId = Number(f.store.createHost(
+    'copy-other@example.test', 'unused-test-hash', '2026-01-01T12:00:00.000Z'
+  ));
+  const otherToken = 'copy-other-session-token';
+  f.store.createSession(
+    crypto.createHash('sha256').update(otherToken).digest('hex'),
+    otherHostId, '2030-01-01T00:00:00.000Z'
+  );
+  assert.equal(
+    (await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', normalized, `gatherly_session=${otherToken}`)).status,
+    404
+  );
+});
+
 test('bulk guest creation rejects empty arrays, oversized batches, and duplicate emails', async (t) => {
   const f = await fixture(t);
   const cookie = await f.register();
@@ -631,4 +950,79 @@ test('RSVP attendee validation rejects invalid input', async (t) => {
     attendees: [{ name: 'Valid Person', ageBand: 'adult' }]
   });
   assert.equal(valid.status, 200);
+});
+
+test('RSVP deadlines use the event timezone and reject ambiguous local times', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, {
+    timezone: 'Asia/Manila', rsvpDeadline: '2026-01-02T20:00'
+  });
+  assert.equal(event.rsvpDeadline, '2026-01-02T12:00:00.000Z');
+
+  const missingTimezone = await f.jsonRequest('/api/events', 'POST', {
+    title: 'Missing timezone', eventDate: '2026-01-10', guestMode: 'individual',
+    rsvpDeadline: '2026-01-02T20:00'
+  }, cookie);
+  assert.equal(missingTimezone.status, 400);
+  const daylightSavingGap = await f.jsonRequest('/api/events', 'POST', {
+    title: 'DST gap', eventDate: '2026-03-10', guestMode: 'individual', timezone: 'America/New_York',
+    rsvpDeadline: '2026-03-08T02:30'
+  }, cookie);
+  assert.equal(daylightSavingGap.status, 400);
+});
+
+test('walk-ins consume capacity and require a reason for host override', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { capacity: 1 });
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Capacity Guest', email: 'capacity@example.test', partyLimit: 1
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+  assert.equal((await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 1
+  })).status, 200);
+
+  const blocked = await f.jsonRequest(`/api/events/${event.id}/check-in/walk-in`, 'POST', {
+    name: 'Blocked walk-in', attendeeName: 'Blocked walk-in'
+  }, cookie);
+  assert.equal(blocked.status, 409);
+  assert.match((await blocked.json()).error, /override with a reason/i);
+  const missingReason = await f.jsonRequest(`/api/events/${event.id}/check-in/walk-in`, 'POST', {
+    name: 'Missing reason', override: true
+  }, cookie);
+  assert.equal(missingReason.status, 400);
+  const override = await f.jsonRequest(`/api/events/${event.id}/check-in/walk-in`, 'POST', {
+    name: 'Approved walk-in', attendeeName: 'Approved walk-in', override: true, reason: 'Venue approved'
+  }, cookie);
+  assert.equal(override.status, 201);
+  assert.equal((await override.json()).totals.walkIns, 1);
+  const csv = await f.request(`/api/events/${event.id}/export`, {}, cookie);
+  const csvText = await csv.text();
+  assert.match(csvText, /"Walk-in","Checked-in time","Attendee check-in times"/);
+  assert.match(csvText, /"Approved walk-in".*"yes"/);
+});
+
+test('postponement stores a replacement schedule, keeps RSVPs open, and captures an update preview', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { guestMode: 'individual' });
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Postponed Guest', email: 'postponed@example.test'
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+  const postponed = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
+    status: 'postponed', note: 'New date confirmed.', replacement: {
+      eventDate: '2026-02-14', startTime: '19:00', endTime: '21:00', timezone: 'Asia/Manila'
+    }
+  }, cookie);
+  assert.equal(postponed.status, 200);
+  const guestView = await (await f.request(`/api/guest/${token}`)).json();
+  assert.equal(guestView.event.replacementEventDate, '2026-02-14');
+  assert.equal(guestView.event.replacementTimezone, 'Asia/Manila');
+  assert.equal(guestView.canRespond, true);
+  assert.match((await postponed.json()).updateMessage, /new schedule/i);
+  const outbox = await (await f.request('/api/outbox', {}, cookie)).json();
+  assert.ok(outbox.messages.some((message) => message.messageType === 'preview' && /postponed/i.test(message.body)));
 });

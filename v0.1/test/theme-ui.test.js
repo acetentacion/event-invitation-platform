@@ -18,6 +18,7 @@ class FakeElement {
     this.disabled = false;
     this.textContent = '';
     this.className = '';
+    this.dataset = {};
     this.attributes = {};
     this.classList = {
       contains: (value) => this.className.split(/\s+/).includes(value),
@@ -62,6 +63,7 @@ class FakeElement {
     clone.parts = {};
     for (const selector of [
       '#guest-greeting', '#guest-title', '#guest-details', '#guest-date',
+      '#guest-rsvp-title', '#guest-rsvp-helper',
       '#guest-location-row', '#guest-location', '#guest-deadline-row', '#guest-deadline',
       '#guest-capacity', '.invitation-footnote', '.invitation-cover', '.preview-image',
       '.preview-title', '.invitation-paper', '.reveal-envelope', '.guest-content',
@@ -77,12 +79,12 @@ class FakeElement {
 
   set innerHTML(value) {
     this.html = value;
-    if (this.className !== 'card event-card') return;
+    if (!this.className.split(/\s+/).includes('event-card')) return;
     this.parts = {};
     for (const selector of [
-      'h2', '.event-breadcrumb-title', '.response-state', '.publication-status',
+      'h2', '.event-breadcrumb-title', '.event-status', '.response-state', '.publication-status',
       '.event-meta', '.stats', '.event-actions', '.publish',
-      '.add', '.toggle', '.refresh', '.guest-form-slot', '.guest-table',
+      '.add', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font', '.theme-image',
@@ -91,7 +93,10 @@ class FakeElement {
       '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
       '.invitation-settings-status', '.invitation-settings-title',
-      '.invitation-settings'
+      '.invitation-settings', '.invitation-copy-greeting', '.invitation-copy-title',
+      '.invitation-copy-intro', '.invitation-copy-rsvp-heading', '.invitation-copy-rsvp-helper',
+      '.invitation-copy-footer', '.save-invitation-copy', '.invitation-copy-status',
+      '.invitation-copy-title-heading', '.invitation-copy-editor'
     ]) this.parts[selector] = new FakeElement();
     this.parts['.theme-panel'].hidden = true;
   }
