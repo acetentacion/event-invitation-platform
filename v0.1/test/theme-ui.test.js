@@ -39,6 +39,12 @@ class FakeElement {
       if (element && element.className === 'invitation-card') this.parts = { '.invitation-card': element };
     }
   }
+  insertBefore(element, reference) {
+      const index = this.children.indexOf(reference);
+      if (index < 0) this.children.push(element);
+      else this.children.splice(index, 0, element);
+      if (element && element.className) this.parts[`.${element.className.split(/\s+/)[0]}`] = element;
+  }
   after(...elements) { this.afterElements = elements; }
   replaceChildren(...elements) {
     this.children = elements;
@@ -78,13 +84,17 @@ class FakeElement {
 
   set innerHTML(value) {
     this.html = value;
+    if (this.className === 'guided-checklist') {
+      this.parts = { '.guided-primary-action': new FakeElement(), '.guided-groups': new FakeElement() };
+      return;
+    }
     if (!this.className.split(/\s+/).includes('event-card')) return;
     this.parts = {};
     for (const selector of [
       'h2', '.event-breadcrumb-title', '.event-status', '.response-state', '.publication-status',
       '.event-meta', '.stats', '.event-actions', '.publish',
       '.add', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
-      '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
+      '.publish-next-steps', '.next-steps-add', '.next-steps-outbox', '.guided-checklist',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font',
       '.invitation-preview', '.theme-status', '.save-theme',

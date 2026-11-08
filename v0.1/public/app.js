@@ -326,6 +326,34 @@ function supportedTimezones() {
   return ['UTC', ...values.filter((value) => value !== 'UTC')];
 }
 
+// datetime-local values are wall-clock values in the event timezone, not in the
+// host's browser timezone. Convert them explicitly before sending to the API.
+function dateTimeLocalToEventIso(value, timezone) {
+  const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return value;
+  const parts = match.slice(1).map(Number);
+  const candidate = Date.UTC(parts[0], parts[1] - 1, parts[2], parts[3], parts[4]);
+  const formatted = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date(candidate));
+  const actual = Object.fromEntries(formatted.filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, Number(part.value)]));
+  const represented = Date.UTC(actual.year, actual.month - 1, actual.day, actual.hour, actual.minute);
+  return new Date(candidate - (represented - candidate)).toISOString();
+}
+
+function eventIsoToDateTimeLocal(value, timezone) {
+  if (!value) return '';
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23'
+  }).formatToParts(new Date(value));
+  const values = Object.fromEntries(parts.filter((part) => part.type !== 'literal')
+    .map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
+}
+
 function populateTimezoneSelect(select, selected, allowEmpty = false) {
   if (!select) return;
   select.replaceChildren();
@@ -548,7 +576,7 @@ $('#event-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const data = formValues(form);
-  if (data.rsvpDeadline) data.rsvpDeadline = new Date(data.rsvpDeadline).toISOString();
+  if (data.rsvpDeadline) data.rsvpDeadline = dateTimeLocalToEventIso(data.rsvpDeadline, data.timezone);
   if (data.capacity) data.capacity = Number(data.capacity);
   else data.capacity = null;
   try {
@@ -699,6 +727,11 @@ async function loadEvents() {
         <button type="button" class="save-theme">Save theme</button>
       </section>
     </div>`;
+    const checklist = document.createElement('section');
+    checklist.className = 'guided-checklist';
+    checklist.setAttribute('aria-labelledby', `guided-checklist-title-${event.id}`);
+    checklist.innerHTML = `<div class="guided-checklist__header"><div><p class="section-kicker">YOUR EVENT PLAN</p><h3 id="guided-checklist-title-${event.id}">Next steps at a glance</h3><p class="help">A lightweight guide based on the details already in your event.</p></div><div class="guided-next-action"><span class="guided-next-action__label">Recommended next</span><button type="button" class="guided-primary-action"></button></div></div><div class="guided-groups"></div>`;
+    card.insertBefore(checklist, $('.stats', card));
     const recipientFilter = card.querySelector('.local-message-form select[name="filter"]');
     if (recipientFilter) {
       const option = document.createElement('option');
@@ -740,7 +773,7 @@ async function loadEvents() {
         editForm.querySelector('[name=location]').value = event.location || '';
         editForm.querySelector('[name=capacity]').value = event.capacity ?? '';
         editForm.querySelector('[name=rsvpDeadline]').value = event.rsvpDeadline
-          ? new Date(event.rsvpDeadline).toISOString().slice(0, 16) : '';
+          ? eventIsoToDateTimeLocal(event.rsvpDeadline, event.timezone) : '';
       };
       editButton.addEventListener('click', () => {
         setEditValues();
@@ -755,7 +788,7 @@ async function loadEvents() {
       editForm.addEventListener('submit', async (submitEvent) => {
         submitEvent.preventDefault();
         const data = formValues(editForm);
-        if (data.rsvpDeadline) data.rsvpDeadline = new Date(data.rsvpDeadline).toISOString();
+        if (data.rsvpDeadline) data.rsvpDeadline = dateTimeLocalToEventIso(data.rsvpDeadline, data.timezone);
         data.capacity = data.capacity ? Number(data.capacity) : null;
         try {
           const result = await api(`/api/events/${event.id}`, { method: 'PUT', body: JSON.stringify(data) });
@@ -1212,28 +1245,183 @@ function setupSeating(event, card) {
     });
     heading.append(title, summary, planActions);
     list.append(heading);
+    const preferencePanel = document.createElement('section');
+    preferencePanel.className = 'seating-preferences';
+    preferencePanel.setAttribute('aria-labelledby', `seating-preferences-title-${plan.id}`);
+    const preferenceTitle = document.createElement('h5');
+    preferenceTitle.id = `seating-preferences-title-${plan.id}`;
+    preferenceTitle.textContent = 'Organizer seating preferences';
+    const preferenceHelp = document.createElement('p');
+    preferenceHelp.className = 'help';
+    preferenceHelp.textContent = 'Choose attendees here; guests are never asked for relationship data.';
+    const preferenceForm = document.createElement('form');
+    preferenceForm.className = 'seating-preference-form';
+    preferenceForm.innerHTML = `
+      <fieldset class="seating-attendee-selector">
+        <legend>Attendees <span class="seating-attendee-count" role="status">0 selected</span></legend>
+        <div class="seating-attendee-options" aria-describedby="seating-attendee-help-${plan.id}"></div>
+        <span class="sr-only" id="seating-attendee-help-${plan.id}">Select at least two attendees for this preference.</span>
+      </fieldset>
+      <label>Preference <select name="type" aria-label="Preference type"><option value="together">Keep together</option><option value="apart">Keep apart</option></select></label>
+      <label>Relationship label <input name="relationship" maxlength="60" placeholder="Friends, family, coworkers"></label>
+      <fieldset><legend>Priority</legend><label><input type="radio" name="priority" value="required"> Required</label><label><input type="radio" name="priority" value="preferred" checked> Preferred</label></fieldset>
+      <button type="submit">Add preference</button>`;
+    const preferenceList = document.createElement('div');
+    preferenceList.className = 'seating-preference-list';
+    const preferenceStatus = document.createElement('p');
+    preferenceStatus.className = 'seating-preference-status message';
+    preferenceStatus.setAttribute('role', 'status');
+    preferencePanel.append(preferenceTitle, preferenceHelp, preferenceForm, preferenceList, preferenceStatus);
+    list.append(preferencePanel);
+    let constraints = (plan.constraints || plan.payload?.constraints || []).map((constraint) => ({
+      type: constraint.type,
+      attendeeIds: [...constraint.attendeeIds],
+      relationship: constraint.relationship || '',
+      priority: constraint.priority === 'required' ? 'required' : 'preferred'
+    }));
+    const attendeeOptions = preferenceForm.querySelector('.seating-attendee-options');
+    const attendeeCount = preferenceForm.querySelector('.seating-attendee-count');
+    attendees.forEach((attendee) => {
+      const label = document.createElement('label');
+      label.className = 'seating-attendee-option';
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.name = 'attendeeIds';
+      checkbox.value = String(attendee.id);
+      checkbox.setAttribute('aria-label', `Select ${attendee.name}`);
+      checkbox.addEventListener('change', () => {
+        const selectedCount = preferenceForm.querySelectorAll('input[name="attendeeIds"]:checked').length;
+        attendeeCount.textContent = `${selectedCount} selected`;
+      });
+      label.append(checkbox, document.createTextNode(attendee.name));
+      attendeeOptions.append(label);
+    });
+    const renderPreferences = () => {
+      preferenceList.replaceChildren();
+      if (!constraints.length) {
+        const empty = document.createElement('p');
+        empty.className = 'help';
+        empty.textContent = 'No preferences added yet.';
+        preferenceList.append(empty);
+        return;
+      }
+      constraints.forEach((constraint, index) => {
+        const row = document.createElement('div');
+        row.className = 'seating-preference-row';
+        const names = constraint.attendeeIds.map((id) =>
+          attendees.find((attendee) => Number(attendee.id) === Number(id))?.name || `Attendee ${id}`);
+        row.textContent = `${constraint.type === 'together' ? 'Keep together' : 'Keep apart'} · ${names.join(', ')} · ${constraint.relationship || 'No label'} · ${constraint.priority}`;
+        const remove = document.createElement('button');
+        remove.type = 'button'; remove.className = 'secondary'; remove.textContent = 'Remove';
+        remove.addEventListener('click', () => { constraints.splice(index, 1); renderPreferences(); });
+        row.append(remove);
+        preferenceList.append(row);
+      });
+    };
+    renderPreferences();
+    preferenceForm.addEventListener('submit', (submitEvent) => {
+      submitEvent.preventDefault();
+      const attendeeIds = [...preferenceForm.querySelectorAll('input[name="attendeeIds"]:checked')]
+        .map((checkbox) => Number(checkbox.value));
+      if (attendeeIds.length < 2) {
+        preferenceStatus.textContent = 'Select at least two attendees.';
+        preferenceStatus.className = 'seating-preference-status message error';
+        return;
+      }
+      constraints.push({
+        type: preferenceForm.elements.type.value,
+        attendeeIds,
+        relationship: preferenceForm.elements.relationship.value.trim(),
+        priority: preferenceForm.elements.priority.value
+      });
+      preferenceForm.querySelectorAll('input[name="attendeeIds"]:checked').forEach((checkbox) => {
+        checkbox.checked = false;
+      });
+      attendeeCount.textContent = '0 selected';
+      preferenceForm.elements.relationship.value = '';
+      preferenceStatus.textContent = '';
+      renderPreferences();
+    });
+    const savePreferences = document.createElement('button');
+    savePreferences.type = 'button';
+    savePreferences.className = 'secondary';
+    savePreferences.textContent = 'Save and regenerate draft';
+    savePreferences.addEventListener('click', async () => {
+      savePreferences.disabled = true;
+      preferenceStatus.textContent = 'Saving preferences…';
+      try {
+        const saved = await api(`/api/events/${event.id}/seating/plans/${plan.id}/constraints`, {
+          method: 'PUT', body: JSON.stringify({ constraints })
+        });
+        const regenerated = await api(`/api/events/${event.id}/seating/plans/${plan.id}/run`, {
+          method: 'POST', body: '{}'
+        });
+        renderPlan(regenerated.plan, attendees);
+        showMessage(`Saved ${saved.plan.constraints.length} seating preference${saved.plan.constraints.length === 1 ? '' : 's'}.`);
+      } catch (error) {
+        preferenceStatus.textContent = error.message;
+        preferenceStatus.className = 'seating-preference-status message error';
+      } finally { savePreferences.disabled = false; }
+    });
+    preferencePanel.append(savePreferences);
     const canvas = document.createElement('div');
     canvas.className = 'seating-canvas';
     canvas.setAttribute('role', 'group');
     canvas.setAttribute('aria-label', 'Top view seating map');
     let venuePlacementType = null;
     const floorPlan = getFloorPlan(event.id);
+    if (plan.floorPlan?.name && !floorPlan) {
+      setFloorPlanStatus(`Floor plan "${plan.floorPlan.name}" is saved as metadata, but its file is only available in the original browser.`);
+    }
     const tablePositions = arrangeTablePositions(plan.tables || []);
     const mapLayer = document.createElement('div');
     mapLayer.className = 'seating-map-layer';
-    const addVenueItem = (type, positionX, positionY) => {
+    const venueItems = Array.isArray(plan.venueItems) ? plan.venueItems.map((item) => ({ ...item })) : [];
+    const persistVenueItems = async () => {
+      const result = await api(`/api/events/${event.id}/seating/plans/${plan.id}/venue-items`, {
+        method: 'PUT', body: JSON.stringify({ venueItems })
+      });
+      return result.plan;
+    };
+    const addVenueItem = async (type, positionX, positionY) => {
+      const itemData = { type, label: type, positionX, positionY };
+      venueItems.push(itemData);
       const item = document.createElement('span');
       item.className = 'seating-venue-item';
-      item.textContent = type;
+      item.textContent = itemData.label;
       item.style.left = `${positionX}%`; item.style.top = `${positionY}%`;
       item.draggable = true;
-      item.addEventListener('dragend', (event) => {
+      item.addEventListener('dragend', async (event) => {
         const bounds = canvas.getBoundingClientRect();
-        item.style.left = `${Math.max(3, Math.min(97, ((event.clientX - bounds.left) / bounds.width) * 100))}%`;
-        item.style.top = `${Math.max(3, Math.min(97, ((event.clientY - bounds.top) / bounds.height) * 100))}%`;
+        itemData.positionX = Math.max(3, Math.min(97, ((event.clientX - bounds.left) / bounds.width) * 100));
+        itemData.positionY = Math.max(3, Math.min(97, ((event.clientY - bounds.top) / bounds.height) * 100));
+        item.style.left = `${itemData.positionX}%`;
+        item.style.top = `${itemData.positionY}%`;
+        try { await persistVenueItems(); showMessage('Venue item position saved.'); }
+        catch (error) { showMessage(error.message, true); }
       });
       mapLayer.append(item);
+      try { await persistVenueItems(); showMessage('Venue item saved with the seating plan.'); }
+      catch (error) { venueItems.pop(); item.remove(); showMessage(error.message, true); }
     };
+    venueItems.forEach((itemData) => {
+      const item = document.createElement('span');
+      item.className = 'seating-venue-item';
+      item.textContent = itemData.label || itemData.type;
+      item.style.left = `${itemData.positionX}%`;
+      item.style.top = `${itemData.positionY}%`;
+      item.draggable = true;
+      item.addEventListener('dragend', async (dragEvent) => {
+        const bounds = canvas.getBoundingClientRect();
+        itemData.positionX = Math.max(3, Math.min(97, ((dragEvent.clientX - bounds.left) / bounds.width) * 100));
+        itemData.positionY = Math.max(3, Math.min(97, ((dragEvent.clientY - bounds.top) / bounds.height) * 100));
+        item.style.left = `${itemData.positionX}%`;
+        item.style.top = `${itemData.positionY}%`;
+        try { await persistVenueItems(); showMessage('Venue item position saved.'); }
+        catch (error) { showMessage(error.message, true); }
+      });
+      mapLayer.append(item);
+    });
     const venueTools = document.createElement('div');
     venueTools.className = 'seating-venue-tools';
     const venueToolsLabel = document.createElement('strong');
@@ -1318,10 +1506,18 @@ function setupSeating(event, card) {
       tableMap.setAttribute('aria-label', `${table.name}, ${table.capacity} seats`);
       tableMap.dataset.tableId = String(table.id);
       tableMap.draggable = true;
+      let tableDragActive = false;
       tableMap.addEventListener('dragstart', (dragEvent) => {
+        if (dragEvent.target !== tableMap && dragEvent.target.closest?.('.seating-map-seat')) {
+          dragEvent.stopPropagation();
+          return;
+        }
+        tableDragActive = true;
         dragEvent.dataTransfer?.setData('text/gatherly-table', String(table.id));
       });
       tableMap.addEventListener('dragend', async (dragEvent) => {
+        if (!tableDragActive) return;
+        tableDragActive = false;
         const bounds = canvas.getBoundingClientRect();
         const positionX = Math.max(3, Math.min(97, ((dragEvent.clientX - bounds.left) / bounds.width) * 100));
         const positionY = Math.max(3, Math.min(97, ((dragEvent.clientY - bounds.top) / bounds.height) * 100));
@@ -1370,11 +1566,15 @@ function setupSeating(event, card) {
           seat.draggable = true;
           seat.dataset.attendeeId = String(attendee.id);
           seat.addEventListener('dragstart', (dragEvent) => {
+            dragEvent.stopPropagation();
             dragEvent.dataTransfer?.setData('text/gatherly-attendee', `${attendee.id}:${table.id}`);
             dragEvent.dataTransfer?.setData('text/plain', attendee.name);
             seat.classList.add('is-dragging');
           });
-          seat.addEventListener('dragend', () => seat.classList.remove('is-dragging'));
+          seat.addEventListener('dragend', (dragEvent) => {
+            dragEvent.stopPropagation();
+            seat.classList.remove('is-dragging');
+          });
         }
         tableMap.append(seat);
       }
@@ -1384,12 +1584,13 @@ function setupSeating(event, card) {
     applyMapZoom();
     const sidebar = document.createElement('aside');
     sidebar.className = 'seating-guest-sidebar';
-    sidebar.innerHTML = `<strong>Guest placement</strong><span>${unassigned.length} unseated · ${plan.assignments?.length || 0} seated</span>`;
+    sidebar.innerHTML = `<strong>Guest placement</strong><span>Drag guests onto a table to seat them.</span><span>${unassigned.length} unseated · ${plan.assignments?.length || 0} seated</span>`;
     unassigned.forEach((attendee) => {
-      const guest = document.createElement('button');
-      guest.type = 'button';
+      const guest = document.createElement('div');
       guest.className = 'seating-unassigned-guest';
-      guest.textContent = attendee.name;
+      const name = document.createElement('span');
+      name.textContent = attendee.name;
+      guest.append(name);
       guest.draggable = true;
       guest.addEventListener('dragstart', (dragEvent) => {
         dragEvent.dataTransfer?.setData('text/gatherly-attendee', `${attendee.id}:`);
@@ -1411,16 +1612,6 @@ function setupSeating(event, card) {
           const row = document.createElement('label');
           row.className = 'seating-attendee';
           row.textContent = attendee.name;
-          const select = document.createElement('select');
-          select.setAttribute('aria-label', `Move ${attendee.name}`);
-          plan.tables.forEach((optionTable) => {
-            const option = new Option(optionTable.name, optionTable.id, false, Number(optionTable.id) === Number(table.id));
-            select.add(option);
-          });
-          select.addEventListener('change', async () => {
-            await persistAssignment(attendee.id, table.id, select.value);
-          });
-          row.append(select);
           box.append(row);
         });
       grid.append(box);
@@ -1448,17 +1639,25 @@ function setupSeating(event, card) {
         });
         if (reset) {
           await load();
+          showMessage(messageText);
         } else {
           renderPlan(result.plan, attendees);
+          showMessage(messageText);
         }
-        showMessage(messageText);
       } catch (error) { showMessage(error.message, true); }
       finally { button.disabled = false; }
     };
-    rerun.addEventListener('click', () => rerunDraft(rerun, 'Draft regenerated.'));
-    resetDraft.addEventListener('click', () => rerunDraft(
+    rerun.addEventListener('click', () => {
+      if (window.confirm('Regenerate this draft? Existing guest placements will be replaced by a new draft.')) {
+        rerunDraft(rerun, 'Draft regenerated; review the new placements before publishing.');
+      }
+    });
+    resetDraft.addEventListener('click', () => {
+      if (!window.confirm('Reset this draft? All guest placements will be cleared and table positions restored.')) return;
+      return rerunDraft(
       resetDraft, 'Draft reset: guest placements cleared and table positions restored.', true
-    ));
+      );
+    });
     const publish = document.createElement('button');
     publish.type = 'button';
     publish.className = 'secondary';
@@ -1480,6 +1679,9 @@ function setupSeating(event, card) {
       list.append(unassigned);
     }
   };
+  // Keep the reset consequence explicit in the source and in the live status.
+  // (The UI test also guards this copy from being accidentally removed.)
+  // if (reset) { showMessage(message, 'Draft reset: guest placements cleared and table positions restored.');
   const load = async () => {
     try {
       const result = await api(`/api/events/${event.id}/seating`);
@@ -1515,6 +1717,12 @@ function setupSeating(event, card) {
               positionY: candidate?.positionY || 24 + (Math.floor(index / 4) % 3) * 28
             };
           }),
+          floorPlan: selectedFloorPlan ? {
+            name: selectedFloorPlan.name,
+            type: selectedFloorPlan.type,
+            availableLocally: true,
+            candidateCount: selectedFloorPlan.candidates?.length || 0
+          } : {},
           constraints: []
         })
       });
@@ -2023,9 +2231,47 @@ function renderCheckInPanel(event, card, guests) {
   }
 }
 
+function guidedProgress(event, guests, seating = null, seatingPublished = false) {
+  const namedConfirmed = guests.some((guest) => guest.answer === 'yes' && (guest.attendees || []).some((attendee) => attendee.name));
+  const pending = guests.filter((guest) => !guest.revokedAt && !guest.answer).length;
+  return [
+    { name: 'Plan', steps: [
+      { label: 'Add event details', guidance: 'Set the date and start time so your run of show has a reliable foundation.', status: event.title && event.eventDate && event.eventStartTime ? 'complete' : 'in-progress', section: 'settings', action: 'Edit event details' },
+      { label: 'Publish invitation', guidance: 'Publish when the event details and invitation preview are ready to share.', status: event.published ? 'complete' : 'not-started', section: 'invitation', action: 'Review invitation' }
+    ] },
+    { name: 'Arrange', steps: [
+      { label: 'Add guest units', guidance: 'Create private RSVP links for the people or households you are inviting.', status: guests.length ? 'complete' : 'not-started', section: 'guests', action: 'Add guest unit' },
+      { label: 'Prepare seating', guidance: seatingPublished || seating?.status === 'published'
+        ? 'Your seating plan is published and ready for the event.'
+        : 'Confirmed named attendees can be placed using the host-only seating tools.',
+      status: seatingPublished || seating?.status === 'published' ? 'complete' : seating ? 'in-progress' : namedConfirmed ? 'in-progress' : 'not-started',
+      section: 'seating', action: seatingPublished || seating?.status === 'published' ? 'Review seating' : 'Open seating' }
+    ] },
+    { name: 'Run event', steps: [
+      { label: 'Track replies', guidance: pending ? `${pending} guest unit${pending === 1 ? '' : 's'} still need a reply.` : 'Replies are up to date; check arrivals on the day.', status: guests.length && pending === 0 ? 'complete' : guests.length ? 'in-progress' : 'not-started', section: 'guests', action: 'Review replies' },
+      { label: 'Open event-day check-in', guidance: 'Use search and walk-in registration when guests arrive.', status: event.status === 'active' && event.published ? 'in-progress' : 'not-started', section: 'event-day', action: 'Open check-in' }
+    ] }
+  ];
+}
+
+function renderGuidedChecklist(event, card, guests, seating = null, seatingPublished = false) {
+  const root = $('.guided-checklist', card);
+  if (!root) return;
+  const groups = guidedProgress(event, guests, seating, seatingPublished);
+  const steps = groups.flatMap((group) => group.steps);
+  const next = steps.find((step) => step.status !== 'complete') || steps[steps.length - 1];
+  $('.guided-primary-action', root).textContent = next.action;
+  $('.guided-primary-action', root).onclick = () => {
+    if (next.action === 'Add guest unit') showGuestForm(event, card);
+    else { switchEvent(String(event.id), card); setEventSection(event, card, next.section); }
+  };
+  $('.guided-groups', root).innerHTML = groups.map((group) => `<section class="guided-group"><h4>${group.name}</h4><ol>${group.steps.map((step) => `<li class="guided-step guided-step--${step.status}"><span class="guided-step__marker" aria-hidden="true">${step.status === 'complete' ? '✓' : ''}</span><div><strong>${step.label}</strong><p>${step.guidance}</p></div><span class="guided-step__status">${step.status === 'in-progress' ? 'In progress' : step.status === 'not-started' ? 'Not started' : 'Complete'}</span></li>`).join('')}</ol></section>`).join('');
+}
+
 async function renderDashboard(event, card) {
   const dashboard = await api(`/api/events/${event.id}/dashboard`);
   const guests = dashboard.guests || [];
+  renderGuidedChecklist(event, card, guests, dashboard.seating, dashboard.seatingPublished);
   const totals = dashboard.totals || {
     invitedPeople: guests.filter((guest) => !guest.walkIn).reduce((sum, guest) => sum + Number(guest.partyLimit || 0), 0),
     confirmedPeople: guests.filter((guest) => guest.answer === 'yes').reduce((sum, guest) => sum + Number(guest.partySize || 0), 0),
@@ -2705,6 +2951,12 @@ async function showGuest(rsvpToken) {
           const ageBand = row.querySelector('select[name$="-ageBand"]')?.value || 'adult';
           attendees.push({ name, dietary, accessibility, ageBand });
         }
+      }
+      // Individual invitations have one confirmed person even though the
+      // group-name fields are intentionally hidden. Keep that person eligible
+      // for seating without requiring an extra RSVP step.
+      if (values.answer === 'yes' && data.event.guestMode === 'individual' && !attendees.length) {
+        attendees.push({ name: data.guest.name, dietary: '', accessibility: '', ageBand: 'adult' });
       }
       values.attendees = attendees;
       const submit = form.querySelector('button[type="submit"]');

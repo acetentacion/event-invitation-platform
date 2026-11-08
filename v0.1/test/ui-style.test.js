@@ -42,6 +42,14 @@ test('local UI carries the Gatherly brand and keeps its synthetic-data warning',
   assert.match(app, /currentEventId === null \|\| String\(currentEventId\) !== String\(event\.id\)/);
   assert.match(app, /check-in\/walk-in/);
   assert.match(app, /formatInvitationDeadline\(value, timezone\)/);
+  assert.match(app, /dateTimeLocalToEventIso/);
+  assert.match(app, /eventIsoToDateTimeLocal/);
+  assert.match(app, /guestMode === 'individual'/);
+  assert.match(app, /Regenerate this draft\?/);
+  assert.match(app, /Reset this draft\?/);
+  assert.match(app, /Drag guests onto a table to seat them/);
+  assert.doesNotMatch(app, /Assign \$\{attendee\.name\}/);
+  assert.match(app, /dragEvent\.target !== tableMap/);
   assert.match(app, /replacementEventDate/);
   assert.match(app, /Capacity is full\. Record this walk-in with a host override\?/);
   assert.match(app, /guest\.checkedInAt \|\| 'Not checked in'/);
@@ -81,6 +89,12 @@ test('visual alignment retains visible focus, mobile layouts, and invitation the
   assert.match(css, /\.guest-content\.reveal-motion-slide-up/);
   assert.match(css, /\.invitation-card\.has-celebration/);
   assert.match(app, /<select class="invitation-celebration"/);
+  assert.doesNotMatch(app, /<select name="attendeeIds" multiple/);
+  assert.match(app, /seating-attendee-options/);
+  assert.match(app, /checkbox\.type = 'checkbox'/);
+  assert.match(app, /seating-attendee-count/);
+  assert.match(css, /\.seating-attendee-options[\s\S]*max-height/);
+  assert.match(css, /\.seating-attendee-option[\s\S]*accent-color/);
   assert.match(html, /class="invitation-sparkle-overlay" aria-hidden="true"/);
   assert.match(css, /prefers-reduced-motion:\s*reduce\)[\s\S]*\.invitation-sparkle-overlay i\s*\{\s*animation:\s*none/i);
   assert.match(html, /class="invitation-leaves" aria-hidden="true"/);

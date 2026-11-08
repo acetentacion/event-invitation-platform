@@ -10,6 +10,20 @@ const {
   Store, DEFAULT_THEME, DEFAULT_INVITATION_SETTINGS, DEFAULT_INVITATION_COPY
 } = require('../persistence');
 
+test('creates durable seating preference storage with organizer priority fields', () => {
+  const store = new Store(':memory:');
+  try {
+    const columns = store.db.prepare('PRAGMA table_info(seating_constraints)').all()
+      .map((column) => column.name);
+    assert.deepEqual(columns, [
+      'id', 'plan_id', 'relationship_type', 'relationship', 'priority',
+      'attendee_ids_json', 'created_at', 'updated_at'
+    ]);
+  } finally {
+    store.close();
+  }
+});
+
 test('adds default theme and invitation settings to an existing event database', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gatherly-theme-migration-'));
   const filename = path.join(directory, 'legacy.sqlite');

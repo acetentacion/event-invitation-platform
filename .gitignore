@@ -1,0 +1,4 @@
+# Runtime SQLite sidecars; the checked-in v0.1/data/gatherly.sqlite remains tracked.
+v0.1/data/*.sqlite-wal
+v0.1/data/*.sqlite-shm
+v0.1/data/*.sqlite-journal

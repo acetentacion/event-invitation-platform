@@ -144,10 +144,48 @@ function validSyntheticEmail(email) {
   return RESERVED_EMAIL_DOMAIN_RE.test(email.slice(email.lastIndexOf('@') + 1));
 }
 
+// Kept at module scope because seating routes validate these payloads too.
+function validateVenueItems(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 100) throw invalid('Venue items are invalid.');
+  return value.map((item) => {
+    const type = typeof item?.type === 'string' ? item.type.trim() : '';
+    const label = typeof item?.label === 'string' ? item.label.trim() : type;
+    const positionX = Number(item?.positionX);
+    const positionY = Number(item?.positionY);
+    const width = item?.width === undefined ? null : Number(item.width);
+    const height = item?.height === undefined ? null : Number(item.height);
+    if (!type || type.length > 50 || !label || label.length > 100 ||
+        !Number.isFinite(positionX) || positionX < 3 || positionX > 97 ||
+        !Number.isFinite(positionY) || positionY < 3 || positionY > 97 ||
+        (width !== null && (!Number.isFinite(width) || width <= 0 || width > 100)) ||
+        (height !== null && (!Number.isFinite(height) || height <= 0 || height > 100))) {
+      throw invalid('Venue items must have a label and valid map position.');
+    }
+    return { type, label, positionX, positionY, ...(width === null ? {} : { width }),
+      ...(height === null ? {} : { height }) };
+  });
+}
+
+function validateFloorPlanMetadata(value) {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalid('Floor plan metadata is invalid.');
+  }
+  const name = typeof value.name === 'string' ? value.name.trim() : '';
+  const type = typeof value.type === 'string' ? value.type.trim() : '';
+  if ((name && name.length > 255) || (type && type.length > 100)) {
+    throw invalid('Floor plan metadata is invalid.');
+  }
+  return { name, type, availableLocally: value.availableLocally !== false,
+    candidateCount: Number.isSafeInteger(Number(value.candidateCount)) ? Number(value.candidateCount) : 0 };
+}
+
 function validateSeatingTables(value) {
   if (!Array.isArray(value) || value.length < 1 || value.length > 40) {
     throw invalid('Add between 1 and 40 seating tables.');
   }
+
   const names = new Set();
   return value.map((table, index) => {
     const name = typeof table?.name === 'string' ? table.name.trim() : `Table ${index + 1}`;
@@ -160,6 +198,44 @@ function validateSeatingTables(value) {
       ? Number(table.positionY) : 24 + (Math.floor(index / 4) % 3) * 28;
     if (!name || name.length > 100 || names.has(name.toLowerCase())) {
       throw invalid('Table names must be unique and 1–100 characters.');
+    }
+
+    function validateVenueItems(value) {
+      if (value === undefined) return [];
+      if (!Array.isArray(value) || value.length > 100) throw invalid('Venue items are invalid.');
+      return value.map((item) => {
+        const type = typeof item?.type === 'string' ? item.type.trim() : '';
+        const label = typeof item?.label === 'string' ? item.label.trim() : type;
+        const positionX = Number(item?.positionX);
+        const positionY = Number(item?.positionY);
+        const width = item?.width === undefined ? null : Number(item.width);
+        const height = item?.height === undefined ? null : Number(item.height);
+        if (!type || type.length > 50 || !label || label.length > 100 ||
+            !Number.isFinite(positionX) || positionX < 3 || positionX > 97 ||
+            !Number.isFinite(positionY) || positionY < 3 || positionY > 97 ||
+            (width !== null && (!Number.isFinite(width) || width <= 0 || width > 100)) ||
+            (height !== null && (!Number.isFinite(height) || height <= 0 || height > 100))) {
+          throw invalid('Venue items must have a label and valid map position.');
+        }
+        return { type, label, positionX, positionY, ...(width === null ? {} : { width }),
+          ...(height === null ? {} : { height }) };
+      });
+    }
+
+    function validateFloorPlanMetadata(value) {
+      if (value === undefined) return {};
+      if (!value || typeof value !== 'object' || Array.isArray(value)) {
+        throw invalid('Floor plan metadata is invalid.');
+      }
+      const name = typeof value.name === 'string' ? value.name.trim() : '';
+      const type = typeof value.type === 'string' ? value.type.trim() : '';
+      if ((name && name.length > 255) || (type && type.length > 100)) {
+        throw invalid('Floor plan metadata is invalid.');
+      }
+      return {
+        name, type, availableLocally: value.availableLocally !== false,
+        candidateCount: Number.isSafeInteger(Number(value.candidateCount)) ? Number(value.candidateCount) : 0
+      };
     }
     if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 100) {
       throw invalid('Table capacity must be a whole number between 1 and 100.');
@@ -177,13 +253,30 @@ function validateSeatingConstraints(value) {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 200) throw invalid('Seating constraints are invalid.');
   return value.map((constraint) => {
-    if (!['together', 'apart'].includes(constraint?.type) ||
+    const relationshipType = constraint?.relationshipType ||
+      (constraint?.type === 'together' ? 'keep-together' :
+        constraint?.type === 'apart' ? 'keep-apart' : constraint?.type);
+    if (!['keep-together', 'keep-apart'].includes(relationshipType) ||
         !Array.isArray(constraint.attendeeIds) || constraint.attendeeIds.length < 2 ||
         constraint.attendeeIds.length > 20 ||
         constraint.attendeeIds.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) < 1)) {
       throw invalid('Each seating constraint needs a type and at least two attendee IDs.');
     }
-    return { type: constraint.type, attendeeIds: [...new Set(constraint.attendeeIds.map(Number))] };
+    if (constraint.priority !== undefined &&
+        !['required', 'preferred'].includes(constraint.priority)) {
+      throw invalid('Seating constraint priority must be required or preferred.');
+    }
+    const priority = constraint.priority === 'required' ? 'required' : 'preferred';
+    const attendeeIds = [...new Set(constraint.attendeeIds.map(Number))];
+    if (attendeeIds.length < 2) throw invalid('Each seating constraint needs two distinct attendee IDs.');
+    return {
+      type: relationshipType === 'keep-together' ? 'together' : 'apart',
+      relationshipType,
+      relationship: typeof constraint.relationship === 'string'
+        ? constraint.relationship.trim().slice(0, 60) : '',
+      attendeeIds,
+      priority
+    };
   });
 }
 
@@ -211,7 +304,9 @@ function generateSeatingDraft(attendees, tables, constraints, seed = 1) {
     if (validIds.length !== constraint.attendeeIds.length) {
       violations.push({ type: 'invalid', message: 'A constraint references an attendee who is not eligible.' });
     }
-    if (constraint.type === 'together') {
+    const relationshipType = constraint.relationshipType ||
+      (constraint.type === 'together' ? 'keep-together' : 'keep-apart');
+    if (relationshipType === 'keep-together') {
       for (let index = 1; index < validIds.length; index += 1) union(validIds[0], validIds[index]);
     }
   }
@@ -259,12 +354,20 @@ function generateSeatingDraft(attendees, tables, constraints, seed = 1) {
     group.forEach((attendee) => assigned.set(Number(attendee.id), tableId));
     remaining.set(tableId, remaining.get(tableId) - group.length);
   }
-  for (const constraint of constraints.filter((item) => item.type === 'apart')) {
+  for (const constraint of constraints) {
+    const relationshipType = constraint.relationshipType ||
+      (constraint.type === 'together' ? 'keep-together' : 'keep-apart');
     const tableIds = constraint.attendeeIds.map((id) => assigned.get(id)).filter(Boolean);
-    if (tableIds.length > 1 && new Set(tableIds).size !== tableIds.length) {
+    const violated = relationshipType === 'keep-apart'
+      ? tableIds.length > 1 && new Set(tableIds).size !== tableIds.length
+      : tableIds.length > 1 && new Set(tableIds).size > 1;
+    if (violated) {
       violations.push({
-        type: 'preference', attendeeIds: constraint.attendeeIds,
-        message: 'Some guests marked “keep apart” share a table.'
+        type: 'preference', relationshipType, priority: constraint.priority || 'preferred',
+        attendeeIds: constraint.attendeeIds,
+        message: relationshipType === 'keep-apart'
+          ? 'Some guests marked “keep apart” share a table.'
+          : 'Some guests marked “keep together” are split across tables.'
       });
     }
   }
@@ -293,7 +396,9 @@ function generateSeatingDraft(attendees, tables, constraints, seed = 1) {
   return {
     assignments,
     unassigned,
-    score: Math.max(0, 100 - violations.length * 10 - unassigned.length * 20 - familiesSplit * 15),
+    score: Math.max(0, 100 - violations.reduce((total, violation) =>
+      total + (violation.priority === 'required' ? 40 : 10), 0) -
+      unassigned.length * 20 - familiesSplit * 15),
     inputHash: sha256(normalized),
     payload: {
       constraints, violations, unassigned,
@@ -548,12 +653,17 @@ function validateEventStatus(input) {
   if (typeof note !== 'string' || note.trim().length > 500) {
     throw invalid('Organizer note must be 500 characters or fewer.');
   }
+  if (input.replacement !== undefined &&
+      (!input.replacement || typeof input.replacement !== 'object' || Array.isArray(input.replacement))) {
+    throw invalid('Replacement schedule must be an object.');
+  }
   const replacement = input.replacement || {};
   const hasReplacement = Object.values(replacement).some((value) => value !== '' && value !== null && value !== undefined);
-  if (input.status === 'postponed' && hasReplacement &&
+  if (input.status === 'postponed' &&
       (!dateOnly(replacement.eventDate) || !timeOnly(replacement.startTime) ||
+       !timeOnly(replacement.endTime) || replacement.endTime <= replacement.startTime ||
        !SUPPORTED_TIMEZONES.has(replacement.timezone))) {
-    throw invalid('A postponed event needs a replacement date, start time, and IANA timezone.');
+    throw invalid('A postponed event needs a replacement date, start time, end time, and IANA timezone.');
   }
   if (hasReplacement && input.status !== 'postponed') throw invalid('Replacement schedule is only valid for postponed events.');
   if (replacement.endTime && (!timeOnly(replacement.endTime) || replacement.endTime <= replacement.startTime)) {
@@ -598,6 +708,21 @@ function validateMessagePreview(input) {
   return { filter: input.filter || 'all', subject: subject?.trim() || null, body: body?.trim() || null };
 }
 
+function startupConfig(env = process.env) {
+  const host = '127.0.0.1';
+  const rawPort = env.PORT === undefined || env.PORT === '' ? '3000' : env.PORT;
+  if (!/^\d+$/.test(String(rawPort))) throw new Error('PORT must be a whole number between 0 and 65535.');
+  const port = Number(rawPort);
+  if (!Number.isSafeInteger(port) || port < 0 || port > 65535) {
+    throw new Error('PORT must be a whole number between 0 and 65535.');
+  }
+  const dbPath = env.GATHERLY_DB_PATH || DEFAULT_DB;
+  if (typeof dbPath !== 'string' || !dbPath.trim() || dbPath === ':memory:') {
+    throw new Error('GATHERLY_DB_PATH must be a writable SQLite file path.');
+  }
+  return { host, port, dbPath };
+}
+
 function createApp(options = {}) {
   const host = options.host || '127.0.0.1';
   if (!LOOPBACK_HOSTS.has(host)) {
@@ -608,6 +733,15 @@ function createApp(options = {}) {
   const clock = options.clock || defaultClock;
   const limits = new Map();
   let closed = false;
+  const cleanupInterval = setInterval(() => {
+    if (!closed) {
+      try { store.cleanupExpiredSessions(currentIso()); } catch (error) {
+        console.error('Session cleanup failed:', error.message);
+      }
+    }
+  }, options.sessionCleanupIntervalMs || 15 * 60 * 1000);
+  cleanupInterval.unref();
+  store.cleanupExpiredSessions(currentIso());
 
   function currentDate() {
     const value = clock();
@@ -760,6 +894,18 @@ function createApp(options = {}) {
       const pathname = requestUrl.pathname;
       const method = req.method;
 
+      if (method === 'GET' && pathname === '/healthz') {
+        return json(res, 200, { status: 'ok' });
+      }
+      if (method === 'GET' && pathname === '/readyz') {
+        if (closed) return json(res, 503, { status: 'not_ready' });
+        try {
+          store.db.prepare('SELECT 1').get();
+        } catch {
+          return json(res, 503, { status: 'not_ready' });
+        }
+        return json(res, 200, { status: 'ready' });
+      }
       if (method === 'GET' &&
           (pathname === '/' || pathname === '/index.html' || /^\/rsvp\/[A-Za-z0-9_-]{30,60}$/.test(pathname))) {
         return sendStatic(res, 'index.html', 'text/html; charset=utf-8');
@@ -896,13 +1042,28 @@ function createApp(options = {}) {
          if (attendees.length > 20) throw invalid('Too many attendees.');
          for (const attendee of attendees) {
            if (!attendee || typeof attendee !== 'object' || Array.isArray(attendee)) throw invalid('Each attendee must be an object.');
-           if (attendee.name !== undefined && typeof attendee.name !== 'string') throw invalid('Attendee name must be text.');
-           if (attendee.dietary !== undefined && typeof attendee.dietary !== 'string') throw invalid('Attendee dietary must be text.');
-           if (attendee.accessibility !== undefined && typeof attendee.accessibility !== 'string') throw invalid('Attendee accessibility must be text.');
+           if (Object.keys(attendee).some((key) => !['name', 'dietary', 'accessibility', 'ageBand'].includes(key))) {
+             throw invalid('Attendee fields are invalid.');
+           }
+           if (attendee.name !== undefined &&
+               (typeof attendee.name !== 'string' || attendee.name.trim().length > 100)) {
+             throw invalid('Attendee name must be 100 characters or fewer.');
+           }
+           if (attendee.dietary !== undefined &&
+               (typeof attendee.dietary !== 'string' || attendee.dietary.trim().length > 200)) {
+             throw invalid('Attendee dietary must be 200 characters or fewer.');
+           }
+           if (attendee.accessibility !== undefined &&
+               (typeof attendee.accessibility !== 'string' || attendee.accessibility.trim().length > 200)) {
+             throw invalid('Attendee accessibility must be 200 characters or fewer.');
+           }
            if (attendee.ageBand !== undefined && !['adult', 'child'].includes(attendee.ageBand)) throw invalid('Attendee age band must be adult or child.');
          }
          if (answer === 'no' && attendees.length !== 0) throw invalid('A no RSVP cannot include attendees.');
          if (attendees.length > input.partySize) throw invalid('Attendees cannot exceed party size.');
+         if (answer === 'yes' && record.guestMode === 'individual' && attendees.length === 0) {
+           attendees.push({ name: record.name });
+         }
          store.saveRsvp(record.guestId, answer, input.partySize, currentIso(), attendees);
          return json(res, 200, { ok: true });
       }
@@ -925,7 +1086,7 @@ function createApp(options = {}) {
         return json(res, 200, { messages: store.listOutbox(hostRecord.id) });
       }
 
-      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests(?:\/bulk)?|dashboard|responses|publish|status|messages|theme|invitation|invitation-copy|export|seating(?:\/seed|\/plans(?:\/\d+(?:\/(?:run|assignments|positions|publish))?)?)?|check-in(?:\/reverse|\/walk-in)?))?$/);
+      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests(?:\/bulk)?|dashboard|responses|publish|status|messages|theme|invitation|invitation-copy|export|seating(?:\/seed|\/plans(?:\/\d+(?:\/(?:run|assignments|positions|venue-items|constraints|publish))?)?)?|check-in(?:\/reverse|\/walk-in)?))?$/);
       if (eventMatch) {
         const eventId = Number(eventMatch[1]);
         if (!Number.isSafeInteger(eventId) || eventId < 1) throw invalid('Event not found.', 404);
@@ -972,7 +1133,7 @@ function createApp(options = {}) {
           return json(res, 200, { invitationCopy: updated.invitationCopy });
         }
         if (action === 'seating' || action.startsWith('seating/')) {
-          const planMatch = action.match(/^seating\/plans(?:\/(\d+)(?:\/(run|assignments|positions|publish))?)?$/);
+          const planMatch = action.match(/^seating\/plans(?:\/(\d+)(?:\/(run|assignments|positions|venue-items|constraints|publish))?)?$/);
           const planId = planMatch && planMatch[1] ? Number(planMatch[1]) : null;
           const planAction = planMatch ? planMatch[2] : null;
           if (method === 'GET' && action === 'seating') {
@@ -1013,10 +1174,13 @@ function createApp(options = {}) {
             if (!name || name.length > 100) throw invalid('Seating plan name must be 1–100 characters.');
             const tables = validateSeatingTables(input.tables);
             const constraints = validateSeatingConstraints(input.constraints);
+            const venueItems = validateVenueItems(input.venueItems);
+            const floorPlan = validateFloorPlanMetadata(input.floorPlan);
             const seed = Number.isSafeInteger(Number(input.seed)) ? Number(input.seed) : 1;
             const attendees = store.seatingAttendees(eventId, hostRecord.id);
             const createdId = store.createSeatingPlan(eventId, hostRecord.id, {
-              name, tables, constraints, seed, algorithmVersion: 'heuristic-1',
+              name, tables, constraints, venueItems, floorPlan, seed, algorithmVersion: 'heuristic-1',
+              seed,
               inputHash: sha256(JSON.stringify({ attendees, tables, constraints, seed }))
             }, currentIso());
             return json(res, 201, { plan: store.getSeatingPlan(createdId, eventId, hostRecord.id) });
@@ -1041,8 +1205,11 @@ function createApp(options = {}) {
                 }))
               }
             } : generated;
-            if (!store.saveSeatingResult(planId, eventId, hostRecord.id, result, currentIso(), 'saved')) {
-              throw invalid('Seating plan could not be saved.', 409);
+            const expectedInputHash = plan.status === 'draft' ? null : plan.inputHash;
+            if (!store.saveSeatingResult(
+              planId, eventId, hostRecord.id, result, currentIso(), 'saved', expectedInputHash
+            )) {
+              throw invalid('Seating plan changed while it was being generated. Refresh and try again.', 409);
             }
             if (input.reset === true &&
                 !store.resetSeatingTablePositions(planId, eventId, hostRecord.id, currentIso())) {
@@ -1053,7 +1220,12 @@ function createApp(options = {}) {
           if (method === 'PUT' && planAction === 'assignments') {
             const input = await bodyJson(req);
             if (!Array.isArray(input.assignments)) throw invalid('Assignments must be an array.');
+            if (input.assignments.length === 0) throw invalid('Assignments update cannot be empty.', 409);
             const attendees = store.seatingAttendees(eventId, hostRecord.id);
+            const currentInputHash = generateSeatingDraft(attendees, plan.tables, plan.constraints || [], plan.seed).inputHash;
+            if (currentInputHash !== plan.inputHash || plan.status === 'stale') {
+              throw invalid('Refresh this stale seating plan before editing assignments.', 409);
+            }
             const attendeeIds = new Set(attendees.map((attendee) => Number(attendee.id)));
             const tableIds = new Set(plan.tables.map((table) => Number(table.id)));
             const seen = new Set();
@@ -1081,7 +1253,11 @@ function createApp(options = {}) {
                   .map((attendee) => ({ attendeeId: Number(attendee.id), name: attendee.name }))
               }
             };
-            store.saveSeatingResult(planId, eventId, hostRecord.id, result, currentIso(), 'saved');
+            if (!store.saveSeatingResult(
+              planId, eventId, hostRecord.id, result, currentIso(), 'saved', plan.inputHash
+            )) {
+              throw invalid('Seating plan changed while it was being updated. Refresh and try again.', 409);
+            }
             return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
           }
           if (method === 'PUT' && planAction === 'positions') {
@@ -1097,7 +1273,33 @@ function createApp(options = {}) {
                 !Number.isFinite(position.positionY) || position.positionY < 3 || position.positionY > 97)) {
               throw invalid('Table positions must stay within the seating map.');
             }
+            const knownTableIds = new Set(plan.tables.map((table) => Number(table.id)));
+            if (!positions.length ||
+                positions.some((position) => !knownTableIds.has(position.tableId)) ||
+                new Set(positions.map((position) => position.tableId)).size !== positions.length) {
+              throw invalid('Table positions must reference each table at most once.');
+            }
             if (!store.updateSeatingTablePositions(planId, eventId, hostRecord.id, positions, currentIso())) {
+              throw invalid('Seating plan could not be updated.', 409);
+            }
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
+          if (method === 'PUT' && planAction === 'venue-items') {
+            const input = await bodyJson(req);
+            const venueItems = validateVenueItems(input.venueItems);
+            if (!store.updateSeatingVenueItems(planId, eventId, hostRecord.id, venueItems, currentIso())) {
+              throw invalid('Seating plan could not be updated.', 409);
+            }
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
+          if (method === 'PUT' && planAction === 'constraints') {
+            const input = await bodyJson(req);
+            const constraints = validateSeatingConstraints(input.constraints);
+            const attendees = store.seatingAttendees(eventId, hostRecord.id);
+            const generated = generateSeatingDraft(attendees, plan.tables, constraints, plan.seed);
+            if (!store.updateSeatingConstraints(
+              planId, eventId, hostRecord.id, constraints, generated.inputHash, currentIso()
+            )) {
               throw invalid('Seating plan could not be updated.', 409);
             }
             return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
@@ -1111,10 +1313,13 @@ function createApp(options = {}) {
         }
         if (method === 'GET' && (action === 'dashboard' || action === '')) {
           const guests = dashboardGuests(eventId, hostRecord.id);
+          const seatingPlans = store.listSeatingPlans(eventId, hostRecord.id);
           return json(res, 200, {
             event: eventDetail(event, hostRecord.id),
             guests,
-            totals: checkInTotals(guests)
+            totals: checkInTotals(guests),
+            seating: seatingPlans[0] || null,
+            seatingPublished: seatingPlans.some((plan) => plan.status === 'published')
           });
         }
         if (action === 'check-in' || action === 'check-in/reverse' || action === 'check-in/walk-in') {
@@ -1370,28 +1575,48 @@ function createApp(options = {}) {
 
   const server = http.createServer((req, res) => { void handle(req, res); });
   server.on('close', () => {
-    if (!closed && ownsStore) {
-      closed = true;
-      store.close();
-    }
+    if (closed) return;
+    closed = true;
+    clearInterval(cleanupInterval);
+    if (ownsStore) store.close();
   });
-  return { server, store, host };
+  function shutdown(callback) {
+    if (closed) return callback?.();
+    server.close(callback);
+  }
+  return { server, store, host, shutdown };
 }
 
 if (require.main === module) {
-  const app = createApp({
-    dbPath: process.env.GATHERLY_DB_PATH || DEFAULT_DB,
-    host: '127.0.0.1'
-  });
-  const port = Number(process.env.PORT || 3000);
-  app.server.listen(port, app.host, () => {
-    console.log(`Gatherly v0.1 local app: http://${app.host}:${port}`);
-    console.log(`SQLite database: ${process.env.GATHERLY_DB_PATH || DEFAULT_DB}`);
-    console.log('Synthetic data only. Invitations are captured locally, never emailed.');
-  });
+  try {
+    const config = startupConfig();
+    const app = createApp(config);
+    const stop = (signal) => {
+      console.log(`${signal} received; shutting down.`);
+      app.shutdown((error) => {
+        if (error) console.error('Shutdown failed:', error.message);
+        process.exitCode = error ? 1 : 0;
+      });
+    };
+    process.once('SIGINT', () => stop('SIGINT'));
+    process.once('SIGTERM', () => stop('SIGTERM'));
+    app.server.on('error', (error) => {
+      console.error(`Unable to start local server: ${error.message}`);
+      process.exitCode = 1;
+    });
+    app.server.listen(config.port, config.host, () => {
+      const actualPort = app.server.address().port;
+      console.log(`Gatherly v0.1 local app: http://${config.host}:${actualPort}`);
+      console.log(`SQLite database: ${config.dbPath}`);
+      console.log('Synthetic data only. Invitations are captured locally, never emailed.');
+    });
+  } catch (error) {
+    console.error(`Unable to start Gatherly v0.1: ${error.message}`);
+    process.exitCode = 1;
+  }
 }
 
 module.exports = {
   createApp, effectiveOpen, hashPassword, checkPassword, validateEvent, validateTheme,
-  validateInvitationSettings
+  validateInvitationSettings, startupConfig
 };

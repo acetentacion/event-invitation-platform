@@ -258,13 +258,24 @@ test('hosts can postpone or cancel published events without losing RSVP records'
     answer: 'yes', partySize: 1
   })).status, 200);
 
+  const incompletePostponement = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
+    status: 'postponed', note: 'Missing schedule.', replacement: {
+      eventDate: '2026-02-14', startTime: '19:00', timezone: 'Asia/Manila'
+    }
+  }, cookie);
+  assert.equal(incompletePostponement.status, 400);
+
   const postponed = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
-    status: 'postponed', note: 'A new date will follow.'
+    status: 'postponed', note: 'A new date is confirmed.',
+    replacement: {
+      eventDate: '2026-02-14', startTime: '19:00',
+      endTime: '21:00', timezone: 'Asia/Manila'
+    }
   }, cookie);
   assert.equal(postponed.status, 200);
   const postponedGuest = await (await f.request(`/api/guest/${token}`)).json();
   assert.equal(postponedGuest.event.status, 'postponed');
-  assert.equal(postponedGuest.event.statusNote, 'A new date will follow.');
+  assert.equal(postponedGuest.event.statusNote, 'A new date is confirmed.');
   assert.equal(postponedGuest.canRespond, true);
 
   const cancelled = await f.jsonRequest(`/api/events/${event.id}/status`, 'POST', {
@@ -963,6 +974,15 @@ test('RSVP attendee validation rejects invalid input', async (t) => {
   });
   assert.equal(tooFewParty.status, 400);
 
+  const tooLongName = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 1, attendees: [{ name: 'x'.repeat(101) }]
+  });
+  assert.equal(tooLongName.status, 400);
+  const tooLongDietary = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 1, attendees: [{ name: 'Person', dietary: 'x'.repeat(201) }]
+  });
+  assert.equal(tooLongDietary.status, 400);
+
   // Valid attendee submission succeeds
   const valid = await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
     answer: 'yes',
@@ -990,6 +1010,20 @@ test('RSVP deadlines use the event timezone and reject ambiguous local times', a
     rsvpDeadline: '2026-03-08T02:30'
   }, cookie);
   assert.equal(daylightSavingGap.status, 400);
+});
+
+test('timezone-safe RSVP deadline payloads preserve an explicit offset', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const response = await f.jsonRequest('/api/events', 'POST', {
+    title: 'Explicit deadline offset',
+    eventDate: '2026-01-10',
+    guestMode: 'individual',
+    timezone: 'Asia/Manila',
+    rsvpDeadline: '2026-01-02T20:00:00+08:00'
+  }, cookie);
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).event.rsvpDeadline, '2026-01-02T12:00:00.000Z');
 });
 
 test('walk-ins consume capacity and require a reason for host override', async (t) => {
@@ -1062,10 +1096,30 @@ test('creates deterministic seating drafts, supports manual edits, publishes, an
 
   const created = await f.jsonRequest(`/api/events/${event.id}/seating/plans`, 'POST', {
     name: 'Dinner draft',
-    tables: [{ name: 'Table 1', capacity: 2 }, { name: 'Table 2', capacity: 2 }]
+    tables: [{ name: 'Table 1', capacity: 2 }, { name: 'Table 2', capacity: 2 }],
+    floorPlan: { name: 'venue.png', type: 'image/png', availableLocally: true, candidateCount: 2 }
   }, cookie);
   assert.equal(created.status, 201);
-  const planId = (await created.json()).plan.id;
+  const createdPlan = (await created.json()).plan;
+  const planId = createdPlan.id;
+  assert.deepEqual(createdPlan.venueItems, []);
+  assert.deepEqual(createdPlan.floorPlan, {
+    name: 'venue.png', type: 'image/png', availableLocally: true, candidateCount: 2
+  });
+  const venueUpdate = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/venue-items`, 'PUT', {
+    venueItems: [
+      { type: 'Dance floor', label: 'Dance floor', positionX: 50, positionY: 60, width: 24, height: 18 },
+      { type: 'Bar', label: 'Bar', positionX: 80, positionY: 20 }
+    ]
+  }, cookie);
+  assert.equal(venueUpdate.status, 200);
+  assert.deepEqual((await venueUpdate.json()).plan.venueItems[0], {
+    type: 'Dance floor', label: 'Dance floor', positionX: 50, positionY: 60, width: 24, height: 18
+  });
+  const reloadedPlan = await f.request(`/api/events/${event.id}/seating/plans/${planId}`, {}, cookie);
+  assert.deepEqual((await reloadedPlan.json()).plan.venueItems[1], {
+    type: 'Bar', label: 'Bar', positionX: 80, positionY: 20
+  });
   const firstRun = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {}, cookie);
   assert.equal(firstRun.status, 200);
   const firstPlan = (await firstRun.json()).plan;
@@ -1076,6 +1130,27 @@ test('creates deterministic seating drafts, supports manual edits, publishes, an
   assert.equal(firstPlan.payload.optimization.familiesKeptTogether, 0);
   assert.equal(firstPlan.payload.optimization.familiesSplit, 1);
   assert.equal(firstPlan.payload.optimization.familyOptimizationScore, 0);
+
+  const preferenceUpdate = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/constraints`, 'PUT', {
+    constraints: [{
+      type: 'together',
+      attendeeIds: [firstPlan.assignments[0].attendeeId, firstPlan.assignments[1].attendeeId],
+      relationship: 'Family',
+      priority: 'required'
+    }]
+  }, cookie);
+  assert.equal(preferenceUpdate.status, 200);
+  const preferencePlan = (await preferenceUpdate.json()).plan;
+  assert.deepEqual(preferencePlan.constraints, [{
+    type: 'together',
+    relationshipType: 'keep-together',
+    attendeeIds: [firstPlan.assignments[0].attendeeId, firstPlan.assignments[1].attendeeId],
+    relationship: 'Family',
+    priority: 'required'
+  }]);
+  assert.equal(preferencePlan.status, 'draft');
+  const preferenceRun = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {}, cookie);
+  assert.equal(preferenceRun.status, 200);
 
   const moved = firstPlan.assignments.map((assignment, index) => ({
     ...assignment, tableId: index === 0 ? 2 : assignment.tableId
@@ -1110,4 +1185,63 @@ test('creates deterministic seating drafts, supports manual edits, publishes, an
   assert.equal(stale.plan.status, 'stale');
   const blockedPublish = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/publish`, 'POST', {}, cookie);
   assert.equal(blockedPublish.status, 409);
+});
+
+test('individual RSVP without named fields remains visible to seating', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie, { guestMode: 'individual' });
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Individual Seat', email: 'individual-seat@example.test'
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+  assert.equal((await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 1
+  })).status, 200);
+
+  const seating = await f.request(`/api/events/${event.id}/seating`, {}, cookie);
+  assert.equal(seating.status, 200);
+  const attendees = (await seating.json()).attendees;
+  assert.equal(attendees.length, 1);
+  assert.equal(attendees[0].name, 'Individual Seat');
+});
+
+test('seating assignment edits reject duplicates and over-capacity moves', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Assignment Guest', email: 'assignment@example.test', partyLimit: 2
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+  await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 2,
+    attendees: [{ name: 'Seat One' }, { name: 'Seat Two' }]
+  });
+  const created = await f.jsonRequest(`/api/events/${event.id}/seating/plans`, 'POST', {
+    name: 'Capacity plan', tables: [{ name: 'One seat', capacity: 1 }, { name: 'Second seat', capacity: 1 }]
+  }, cookie);
+  const planId = (await created.json()).plan.id;
+  const run = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {}, cookie);
+  const assignments = (await run.json()).plan.assignments;
+  const duplicate = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/assignments`, 'PUT', {
+    assignments: [{ attendeeId: assignments[0].attendeeId, tableId: 1 },
+      { attendeeId: assignments[0].attendeeId, tableId: 2 }]
+  }, cookie);
+  assert.equal(duplicate.status, 400);
+  const overCapacity = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/assignments`, 'PUT', {
+    assignments: [{ attendeeId: assignments[0].attendeeId, tableId: 1 },
+      { attendeeId: assignments[1].attendeeId, tableId: 1 }]
+  }, cookie);
+  assert.equal(overCapacity.status, 409);
+  const blockedAssignments = await f.jsonRequest(
+    `/api/events/${event.id}/seating/plans/${planId}/assignments`, 'PUT',
+    { assignments: [] }, cookie
+  );
+  assert.equal(blockedAssignments.status, 409);
+  const badPositions = await f.jsonRequest(
+    `/api/events/${event.id}/seating/plans/${planId}/positions`, 'PUT',
+    { positions: [{ tableId: 999, positionX: 24, positionY: 68 }] }, cookie
+  );
+  assert.equal(badPositions.status, 400);
 });

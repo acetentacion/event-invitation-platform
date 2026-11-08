@@ -255,6 +255,8 @@ class Store {
         input_hash TEXT NOT NULL DEFAULT '',
         score INTEGER NOT NULL DEFAULT 0,
         payload_json TEXT NOT NULL DEFAULT '{}',
+        venue_items_json TEXT NOT NULL DEFAULT '[]',
+        floor_plan_json TEXT NOT NULL DEFAULT '{}',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         published_at TEXT
@@ -278,6 +280,16 @@ class Store {
         PRIMARY KEY (plan_id, attendee_id),
         UNIQUE (plan_id, attendee_id, table_id)
       );
+      CREATE TABLE IF NOT EXISTS seating_constraints (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL REFERENCES seating_plans(id) ON DELETE CASCADE,
+        relationship_type TEXT NOT NULL CHECK (relationship_type IN ('keep-together', 'keep-apart')),
+        relationship TEXT NOT NULL DEFAULT '',
+        priority TEXT NOT NULL DEFAULT 'preferred' CHECK (priority IN ('required', 'preferred')),
+        attendee_ids_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
       CREATE INDEX IF NOT EXISTS events_host_idx ON events(host_id, created_at);
       CREATE INDEX IF NOT EXISTS guests_event_idx ON guest_units(event_id, created_at);
@@ -286,6 +298,7 @@ class Store {
       CREATE INDEX IF NOT EXISTS check_ins_event_idx ON check_ins(event_id, checked_in_at);
       CREATE INDEX IF NOT EXISTS seating_plans_event_idx ON seating_plans(event_id, updated_at);
       CREATE INDEX IF NOT EXISTS seating_assignments_plan_idx ON seating_assignments(plan_id, table_id);
+      CREATE INDEX IF NOT EXISTS seating_constraints_plan_idx ON seating_constraints(plan_id, id);
       CREATE UNIQUE INDEX IF NOT EXISTS check_ins_guest_active_idx
         ON check_ins(guest_unit_id) WHERE guest_unit_id IS NOT NULL AND reversed_at IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS check_ins_attendee_active_idx
@@ -352,10 +365,22 @@ class Store {
       this.db.exec('ALTER TABLE guest_units ADD COLUMN walk_in INTEGER NOT NULL DEFAULT 0');
     }
     const seatingTableColumns = this.db.prepare('PRAGMA table_info(seating_tables)').all();
+    const seatingConstraintColumns = this.db.prepare('PRAGMA table_info(seating_constraints)').all();
+    const seatingPlanColumns = this.db.prepare('PRAGMA table_info(seating_plans)').all();
+    if (seatingPlanColumns.length > 0 && !seatingPlanColumns.some((column) => column.name === 'venue_items_json')) {
+      this.db.exec("ALTER TABLE seating_plans ADD COLUMN venue_items_json TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (seatingPlanColumns.length > 0 && !seatingPlanColumns.some((column) => column.name === 'floor_plan_json')) {
+      this.db.exec("ALTER TABLE seating_plans ADD COLUMN floor_plan_json TEXT NOT NULL DEFAULT '{}'");
+    }
     if (seatingTableColumns.length > 0 && !seatingTableColumns.some((column) => column.name === 'shape')) {
       this.db.exec("ALTER TABLE seating_tables ADD COLUMN shape TEXT NOT NULL DEFAULT 'round'");
       this.db.exec('ALTER TABLE seating_tables ADD COLUMN position_x REAL NOT NULL DEFAULT 50');
       this.db.exec('ALTER TABLE seating_tables ADD COLUMN position_y REAL NOT NULL DEFAULT 50');
+    }
+    if (seatingConstraintColumns.length > 0 &&
+        !seatingConstraintColumns.some((column) => column.name === 'relationship')) {
+      this.db.exec("ALTER TABLE seating_constraints ADD COLUMN relationship TEXT NOT NULL DEFAULT ''");
     }
     const refreshedSeatingTableColumns = this.db.prepare('PRAGMA table_info(seating_tables)').all();
     if (refreshedSeatingTableColumns.length > 0 &&
@@ -492,6 +517,10 @@ class Store {
 
   deleteSession(tokenHash) {
     this.db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(tokenHash);
+  }
+
+  cleanupExpiredSessions(at) {
+    return this.db.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(at).changes;
   }
 
   createEvent(hostId, event, createdAt) {
@@ -766,6 +795,25 @@ class Store {
         error.code = 'NOT_FOUND';
         throw error;
       }
+      const event = this.db.prepare(
+        `SELECT capacity,
+                COALESCE((SELECT SUM(party_size) FROM rsvps
+                          JOIN guest_units ON guest_units.id = rsvps.guest_unit_id
+                          WHERE guest_units.event_id = events.id AND rsvps.answer = 'yes'), 0) AS attending
+         FROM events WHERE id = ?`
+      ).get(guest.eventId);
+      if (answer === 'yes' && event.capacity !== null) {
+        const previous = this.db.prepare(
+          "SELECT party_size FROM rsvps WHERE guest_unit_id = ? AND answer = 'yes'"
+        ).get(guestId);
+        const replacement = previous ? Number(previous.party_size) : 0;
+        if (Number(event.attending) - replacement + Number(partySize) > Number(event.capacity)) {
+          const error = new Error(`This event has a capacity of ${event.capacity}; there are not enough remaining places.`);
+          error.status = 409;
+          error.code = 'CAPACITY_EXCEEDED';
+          throw error;
+        }
+      }
       this.db.prepare(
         `INSERT INTO rsvps (guest_unit_id, answer, party_size, updated_at)
          VALUES (?, ?, ?, ?)
@@ -782,9 +830,9 @@ class Store {
       for (const attendee of attendees) {
         insert.run(
           guestId,
-          String(attendee.name || '').trim().slice(0, 100),
-          String(attendee.dietary || '').trim().slice(0, 200),
-          String(attendee.accessibility || '').trim().slice(0, 200),
+          (attendee.name || '').trim(),
+          (attendee.dietary || '').trim(),
+          (attendee.accessibility || '').trim(),
           attendee.ageBand === 'child' ? 'child' : 'adult',
           updatedAt
         );
@@ -834,7 +882,8 @@ class Store {
     const plan = this.db.prepare(
       `SELECT p.id, p.event_id AS eventId, p.name, p.status,
               p.algorithm_version AS algorithmVersion, p.seed, p.input_hash AS inputHash,
-              p.score, p.payload_json AS payloadJson, p.created_at AS createdAt,
+              p.score, p.payload_json AS payloadJson, p.venue_items_json AS venueItemsJson,
+              p.floor_plan_json AS floorPlanJson, p.created_at AS createdAt,
               p.updated_at AS updatedAt, p.published_at AS publishedAt
        FROM seating_plans p JOIN events e ON e.id = p.event_id
        WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
@@ -842,6 +891,10 @@ class Store {
     if (!plan) return null;
     let payload = {};
     try { payload = JSON.parse(plan.payloadJson); } catch { payload = {}; }
+    let venueItems = [];
+    try { venueItems = JSON.parse(plan.venueItemsJson); } catch { venueItems = []; }
+    let floorPlan = {};
+    try { floorPlan = JSON.parse(plan.floorPlanJson); } catch { floorPlan = {}; }
     const tables = this.db.prepare(
       `SELECT id, name, capacity, shape, position_x AS positionX, position_y AS positionY,
               sort_order AS sortOrder
@@ -857,11 +910,24 @@ class Store {
     ).all(planId).map((assignment) => ({
       attendeeId: Number(assignment.attendeeId), tableId: Number(assignment.tableId)
     }));
+    let constraints = this.db.prepare(
+      `SELECT relationship_type AS relationshipType, relationship, priority, attendee_ids_json AS attendeeIdsJson
+       FROM seating_constraints WHERE plan_id = ? ORDER BY id`
+    ).all(planId).map((constraint) => {
+      let attendeeIds = [];
+      try { attendeeIds = JSON.parse(constraint.attendeeIdsJson); } catch { attendeeIds = []; }
+      return {
+        relationship: constraint.relationship || '', relationshipType: constraint.relationshipType,
+        type: constraint.relationshipType === 'keep-together' ? 'together' : 'apart',
+        priority: constraint.priority, attendeeIds: attendeeIds.map(Number)
+      };
+    });
+    if (!constraints.length && Array.isArray(payload.constraints)) constraints = payload.constraints;
     return {
       id: Number(plan.id), eventId: Number(plan.eventId), name: plan.name, status: plan.status,
       algorithmVersion: plan.algorithmVersion, seed: Number(plan.seed), inputHash: plan.inputHash,
       score: Number(plan.score), createdAt: plan.createdAt, updatedAt: plan.updatedAt,
-      publishedAt: plan.publishedAt, tables, assignments, payload, ...payload
+      publishedAt: plan.publishedAt, tables, assignments, venueItems, floorPlan, payload, ...payload, constraints
     };
   }
 
@@ -872,10 +938,12 @@ class Store {
       if (!event) return null;
       const inserted = this.db.prepare(
         `INSERT INTO seating_plans
-         (event_id, name, algorithm_version, seed, input_hash, payload_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+         (event_id, name, algorithm_version, seed, input_hash, payload_json, venue_items_json,
+          floor_plan_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       ).run(eventId, input.name, input.algorithmVersion, input.seed, input.inputHash,
-        JSON.stringify({ constraints: input.constraints || [], violations: [], unassigned: [] }), now, now);
+        JSON.stringify({ constraints: input.constraints || [], violations: [], unassigned: [] }),
+        JSON.stringify(input.venueItems || []), JSON.stringify(input.floorPlan || {}), now, now);
       const planId = Number(inserted.lastInsertRowid);
       const insertTable = this.db.prepare(
         `INSERT INTO seating_tables
@@ -885,6 +953,15 @@ class Store {
       input.tables.forEach((table, index) => insertTable.run(
         planId, table.name, table.capacity, table.shape,
         table.positionX, table.positionY, table.positionX, table.positionY, index
+      ));
+      const insertConstraint = this.db.prepare(
+        `INSERT INTO seating_constraints
+         (plan_id, relationship_type, relationship, priority, attendee_ids_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      (input.constraints || []).forEach((constraint) => insertConstraint.run(
+        planId, constraint.relationshipType, constraint.relationship || '', constraint.priority,
+        JSON.stringify(constraint.attendeeIds), now, now
       ));
       return planId;
     });
@@ -928,13 +1005,14 @@ class Store {
     });
   }
 
-  saveSeatingResult(planId, eventId, hostId, result, now, status = 'saved') {
+  saveSeatingResult(planId, eventId, hostId, result, now, status = 'saved', expectedInputHash = null) {
     return this.transaction(() => {
       const owned = this.db.prepare(
-        `SELECT p.id FROM seating_plans p JOIN events e ON e.id = p.event_id
+        `SELECT p.id, p.input_hash AS inputHash FROM seating_plans p JOIN events e ON e.id = p.event_id
          WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
       ).get(planId, eventId, hostId);
       if (!owned) return false;
+      if (expectedInputHash !== null && owned.inputHash !== expectedInputHash) return false;
       this.db.prepare(
         `UPDATE seating_plans SET status = ?, score = ?, input_hash = ?, payload_json = ?, updated_at = ?
          WHERE id = ?`
@@ -958,6 +1036,15 @@ class Store {
          WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
       ).get(planId, eventId, hostId);
       if (!owned) return false;
+      const tableIds = this.db.prepare(
+        'SELECT id FROM seating_tables WHERE plan_id = ?'
+      ).all(planId).map((table) => Number(table.id));
+      const validIds = new Set(tableIds);
+      if (!positions.length || positions.some((position) => !validIds.has(Number(position.tableId))) ||
+          new Set(positions.map((position) => Number(position.tableId))).size !== positions.length) {
+        return false;
+      }
+
       const update = this.db.prepare(
         'UPDATE seating_tables SET position_x = ?, position_y = ? WHERE id = ? AND plan_id = ?'
       );
@@ -966,6 +1053,40 @@ class Store {
       return true;
     });
   }
+
+  updateSeatingConstraints(planId, eventId, hostId, constraints, inputHash, now) {
+    return this.transaction(() => {
+      const owned = this.db.prepare(
+        `SELECT p.id, p.payload_json AS payloadJson FROM seating_plans p JOIN events e ON e.id = p.event_id
+         WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
+      ).get(planId, eventId, hostId);
+      if (!owned) return false;
+      let payload = {};
+      try { payload = JSON.parse(owned.payloadJson); } catch { payload = {}; }
+      payload.constraints = constraints;
+      payload.violations = [];
+      this.db.prepare('DELETE FROM seating_constraints WHERE plan_id = ?').run(planId);
+      const insertConstraint = this.db.prepare(
+        `INSERT INTO seating_constraints
+         (plan_id, relationship_type, relationship, priority, attendee_ids_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      constraints.forEach((constraint) => insertConstraint.run(
+        planId, constraint.relationshipType ||
+          (constraint.type === 'together' ? 'keep-together' : 'keep-apart'),
+        constraint.relationship || '', constraint.priority || 'preferred',
+        JSON.stringify(constraint.attendeeIds), now, now
+      ));
+      this.db.prepare(
+        `UPDATE seating_plans SET status = 'draft', input_hash = ?, payload_json = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(inputHash, JSON.stringify(payload), now, planId);
+      this.db.prepare('DELETE FROM seating_assignments WHERE plan_id = ?').run(planId);
+      return true;
+    });
+  }
+
+
 
   resetSeatingTablePositions(planId, eventId, hostId, now) {
     return this.transaction(() => {
@@ -1000,6 +1121,14 @@ class Store {
       this.db.prepare('UPDATE seating_plans SET updated_at = ? WHERE id = ?').run(now, planId);
       return true;
     });
+  }
+
+  updateSeatingVenueItems(planId, eventId, hostId, venueItems, now) {
+    return this.db.prepare(
+      `UPDATE seating_plans SET venue_items_json = ?, updated_at = ?
+       WHERE id = ? AND event_id = ? AND EXISTS
+       (SELECT 1 FROM events WHERE id = ? AND host_id = ?)`
+    ).run(JSON.stringify(venueItems), now, planId, eventId, eventId, hostId).changes;
   }
 
   publishSeatingPlan(planId, eventId, hostId, now) {

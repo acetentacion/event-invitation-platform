@@ -91,6 +91,17 @@ npm run reset
 
 The reset asks for the exact confirmation `RESET` and removes only that SQLite file and its `-wal` / `-shm` sidecars. It does not touch the repository-root demo. If you set `GATHERLY_DB_PATH`, use the same environment variable for reset.
 
+The local server binds to loopback (`127.0.0.1`) only. `GET /healthz` is a
+lightweight liveness check and `GET /readyz` verifies the SQLite store is
+available. Startup rejects invalid `PORT` values and invalid database paths;
+`SIGINT`/`SIGTERM` close the HTTP server and SQLite cleanly. Expired cookie
+sessions are removed at startup and periodically while the server runs.
+
+For a clean local reset, stop the server first and run `npm run reset`. The
+command requires the exact confirmation `RESET`, refuses directories,
+symlinks, and non-`.sqlite` paths, and removes only the database plus its
+SQLite sidecars. Do not use it against a shared or production database.
+
 ## Test
 
 Run the API integration tests from this directory:

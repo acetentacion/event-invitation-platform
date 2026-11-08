@@ -73,6 +73,13 @@ class FakeElement {
     this.children.push(...elements);
   }
 
+  insertBefore(element, reference) {
+    const index = this.children.indexOf(reference);
+    if (index < 0) this.children.push(element);
+    else this.children.splice(index, 0, element);
+    if (element && element.className) this.parts[`.${element.className.split(/\s+/)[0]}`] = element;
+  }
+
   after(...elements) { this.afterElements = elements; }
   scrollIntoView() { this.scrolledIntoView = true; }
 
@@ -95,6 +102,10 @@ class FakeElement {
 
   set innerHTML(value) {
     this.html = value;
+    if (this.className === 'guided-checklist') {
+      this.parts = { '.guided-primary-action': new FakeElement(), '.guided-groups': new FakeElement() };
+      return;
+    }
     if (this.tagName === 'table') {
       this.parts = { tbody: new FakeElement() };
       return;
@@ -130,6 +141,7 @@ class FakeElement {
       '.event-meta', '.stats', '.event-actions', '.event-status-panel', '.event-status-form', '.event-status-message', '.local-message-panel', '.local-message-form', '.publish',
       '.open-event', '.event-workspace', '.back-events', '.add', '.bulk-add', '.guest-actions', '.guest-toggle', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
+      '.guided-checklist', '.guided-primary-action', '.guided-groups',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
       '.theme-background', '.theme-text', '.theme-font',
       '.invitation-preview', '.theme-status', '.save-theme',
@@ -305,6 +317,7 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.equal(card.parts['.event-breadcrumb-title'].textContent, 'Sample gathering');
   assert.equal(card.parts['.response-state'].textContent, 'RSVPs open');
   assert.match(card.parts['.stats'].html, /class="stats__grid"/);
+  assert.ok(card.parts['.guided-checklist'], 'guided organizer checklist is present');
   for (const label of ['INVITED UNITS', 'ATTENDING PEOPLE', 'AWAITING REPLY', 'MAYBE', 'DECLINED', 'REVOKED']) {
     assert.match(card.parts['.stats'].html, new RegExp(`<span>${label}</span>`));
   }
@@ -786,4 +799,24 @@ test('closed invitations show any saved reply without offering another submissio
   assert.equal(getElement('#rsvp-confirmation').hidden, false);
   assert.equal(getElement('#edit-rsvp').hidden, true);
   assert.match(getElement('#guest-capacity').textContent, /up to 1 person/);
+});
+
+test('seating reset and regeneration keep destructive actions behind confirmations', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  assert.match(source, /window\.confirm\('Regenerate this draft\? Existing guest placements will be replaced by a new draft\.'\)/);
+  assert.match(source, /window\.confirm\('Reset this draft\? All guest placements will be cleared and table positions restored\.'\)/);
+  assert.match(source, /body: JSON\.stringify\(\{ reset \}\)/);
+});
+
+test('organizer seating preferences remain host-only and preserve drag placement controls', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
+  const styles = fs.readFileSync(path.join(__dirname, '../public/styles.css'), 'utf8');
+  assert.match(source, /Organizer seating preferences/);
+  assert.match(source, /Keep together/);
+  assert.match(source, /Keep apart/);
+  assert.match(source, /Relationship label/);
+  assert.match(source, /priority.*required/);
+  assert.match(source, /seating\/plans\/\$\{plan\.id\}\/constraints/);
+  assert.match(source, /text\/gatherly-attendee/);
+  assert.match(styles, /\.seating-preference-form/);
 });
