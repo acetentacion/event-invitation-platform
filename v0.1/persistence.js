@@ -5,6 +5,22 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
+const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
+function legacyInvitationUrl(record) {
+  const prefix = `Hello ${record.name}\n\nYou are invited to ${record.title} on ${record.eventDate}.\nRSVP using your private local link: `;
+  const suffix = '\n\nLocal email capture only. No email was sent.';
+  if (typeof record.body !== 'string' || !record.body.startsWith(prefix) || !record.body.endsWith(suffix)) {
+    return null;
+  }
+  if (record.subject !== `Your invitation: ${record.title}` ||
+      (record.email !== null && record.recipient !== record.email)) {
+    return null;
+  }
+  const inviteUrl = record.body.slice(prefix.length, -suffix.length);
+  if (!/^\/rsvp\/[A-Za-z0-9_-]{30,60}$/.test(inviteUrl)) return null;
+  return sha256(inviteUrl.slice('/rsvp/'.length)) === record.tokenHash ? inviteUrl : null;
+}
+
 const DEFAULT_THEME = Object.freeze({
   preset: 'classic',
   primaryColor: '#315a4c',
@@ -27,7 +43,10 @@ const DEFAULT_INVITATION_COPY = Object.freeze({
   intro: '',
   rsvpHeading: '',
   rsvpHelper: '',
-  footerNote: ''
+  footerNote: '',
+  image: null,
+  imageShape: 'circle',
+  imageAlt: ''
 });
 
 function storedInvitationSettings(value) {
@@ -62,11 +81,27 @@ function storedInvitationCopy(value) {
     const copy = JSON.parse(value);
     const keys = copy && typeof copy === 'object' && !Array.isArray(copy)
       ? Object.keys(copy).sort() : [];
+    const legacy = ['greeting', 'title', 'intro', 'rsvpHeading', 'rsvpHelper', 'footerNote'].sort();
     const expected = Object.keys(DEFAULT_INVITATION_COPY).sort();
     if (copy && typeof copy === 'object' && !Array.isArray(copy) &&
-        keys.join(',') === expected.join(',') &&
-        expected.every((key) => typeof copy[key] === 'string')) {
-      return { ...DEFAULT_INVITATION_COPY, ...copy };
+        (keys.join(',') === legacy.join(',') || keys.join(',') === expected.join(',')) &&
+        legacy.every((key) => typeof copy[key] === 'string')) {
+      let image = null;
+      if (copy.image === null || copy.image === undefined) {
+        image = null;
+      } else if (typeof copy.image === 'string') {
+        const match = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(copy.image);
+        if (match && match[1].length % 4 === 0) {
+          const decoded = Buffer.from(match[1], 'base64');
+          if (decoded.length > 0 && decoded.length <= 1024 * 1024 && decoded.toString('base64') === match[1]) {
+            image = copy.image;
+          }
+        }
+      }
+      const imageShape = ['circle', 'rounded-square', 'square', 'arch'].includes(copy.imageShape)
+        ? copy.imageShape : DEFAULT_INVITATION_COPY.imageShape;
+      const imageAlt = typeof copy.imageAlt === 'string' && copy.imageAlt.length <= 200 ? copy.imageAlt : '';
+      return { ...DEFAULT_INVITATION_COPY, ...copy, image, imageShape, imageAlt };
     }
   } catch {
     // Missing or malformed persisted copy should never break event reads.
@@ -92,8 +127,9 @@ function storedTheme(value) {
         /^#[0-9a-fA-F]{6}$/.test(theme.backgroundColor) &&
         /^#[0-9a-fA-F]{6}$/.test(theme.textColor) &&
         ['serif', 'sans'].includes(theme.fontFamily) &&
+        ['small', 'medium', 'large'].includes(theme.fontSize || 'medium') &&
         validCoverImage) {
-      return {
+      const result = {
         preset: theme.preset,
         primaryColor: theme.primaryColor,
         backgroundColor: theme.backgroundColor,
@@ -101,6 +137,8 @@ function storedTheme(value) {
         fontFamily: theme.fontFamily,
         coverImage: theme.coverImage
       };
+      if (['small', 'medium', 'large'].includes(theme.fontSize)) result.fontSize = theme.fontSize;
+      return result;
     }
   } catch {
     // A missing or malformed persisted value should never break event reads.
@@ -207,12 +245,47 @@ class Store {
         body TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS seating_plans (
+        id INTEGER PRIMARY KEY,
+        event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
+        status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'saved', 'published', 'stale', 'archived')),
+        algorithm_version TEXT NOT NULL DEFAULT 'heuristic-1',
+        seed INTEGER NOT NULL DEFAULT 1,
+        input_hash TEXT NOT NULL DEFAULT '',
+        score INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        published_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS seating_tables (
+        id INTEGER PRIMARY KEY,
+        plan_id INTEGER NOT NULL REFERENCES seating_plans(id) ON DELETE CASCADE,
+        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 100),
+        capacity INTEGER NOT NULL CHECK (capacity BETWEEN 1 AND 100),
+        shape TEXT NOT NULL DEFAULT 'round' CHECK (shape IN ('round', 'rectangle', 'square', 'banquet')),
+        position_x REAL NOT NULL DEFAULT 50,
+        position_y REAL NOT NULL DEFAULT 50,
+        initial_position_x REAL NOT NULL DEFAULT 50,
+        initial_position_y REAL NOT NULL DEFAULT 50,
+        sort_order INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS seating_assignments (
+        plan_id INTEGER NOT NULL REFERENCES seating_plans(id) ON DELETE CASCADE,
+        attendee_id INTEGER NOT NULL REFERENCES rsvp_attendees(id) ON DELETE CASCADE,
+        table_id INTEGER NOT NULL REFERENCES seating_tables(id) ON DELETE CASCADE,
+        PRIMARY KEY (plan_id, attendee_id),
+        UNIQUE (plan_id, attendee_id, table_id)
+      );
       CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
       CREATE INDEX IF NOT EXISTS events_host_idx ON events(host_id, created_at);
       CREATE INDEX IF NOT EXISTS guests_event_idx ON guest_units(event_id, created_at);
       CREATE INDEX IF NOT EXISTS outbox_guest_idx ON email_outbox(guest_unit_id, created_at);
       CREATE INDEX IF NOT EXISTS local_messages_event_idx ON local_messages(event_id, created_at);
       CREATE INDEX IF NOT EXISTS check_ins_event_idx ON check_ins(event_id, checked_in_at);
+      CREATE INDEX IF NOT EXISTS seating_plans_event_idx ON seating_plans(event_id, updated_at);
+      CREATE INDEX IF NOT EXISTS seating_assignments_plan_idx ON seating_assignments(plan_id, table_id);
       CREATE UNIQUE INDEX IF NOT EXISTS check_ins_guest_active_idx
         ON check_ins(guest_unit_id) WHERE guest_unit_id IS NOT NULL AND reversed_at IS NULL;
       CREATE UNIQUE INDEX IF NOT EXISTS check_ins_attendee_active_idx
@@ -278,6 +351,20 @@ class Store {
     if (!guestColumns.some((column) => column.name === 'walk_in')) {
       this.db.exec('ALTER TABLE guest_units ADD COLUMN walk_in INTEGER NOT NULL DEFAULT 0');
     }
+    const seatingTableColumns = this.db.prepare('PRAGMA table_info(seating_tables)').all();
+    if (seatingTableColumns.length > 0 && !seatingTableColumns.some((column) => column.name === 'shape')) {
+      this.db.exec("ALTER TABLE seating_tables ADD COLUMN shape TEXT NOT NULL DEFAULT 'round'");
+      this.db.exec('ALTER TABLE seating_tables ADD COLUMN position_x REAL NOT NULL DEFAULT 50');
+      this.db.exec('ALTER TABLE seating_tables ADD COLUMN position_y REAL NOT NULL DEFAULT 50');
+    }
+    const refreshedSeatingTableColumns = this.db.prepare('PRAGMA table_info(seating_tables)').all();
+    if (refreshedSeatingTableColumns.length > 0 &&
+        !refreshedSeatingTableColumns.some((column) => column.name === 'initial_position_x')) {
+      this.db.exec('ALTER TABLE seating_tables ADD COLUMN initial_position_x REAL NOT NULL DEFAULT 50');
+      this.db.exec('ALTER TABLE seating_tables ADD COLUMN initial_position_y REAL NOT NULL DEFAULT 50');
+      this.db.exec('UPDATE seating_tables SET initial_position_x = position_x, initial_position_y = position_y');
+    }
+    this.backfillLegacyInviteUrls();
     const rsvpAttendeeTables = this.db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='rsvp_attendees'"
     ).all();
@@ -317,6 +404,35 @@ class Store {
           ON check_ins(attendee_id) WHERE attendee_id IS NOT NULL AND reversed_at IS NULL;
       `);
     }
+  }
+
+  backfillLegacyInviteUrls() {
+    const candidates = this.db.prepare(
+      `SELECT g.id, g.name, g.email, g.token_hash AS tokenHash,
+              e.title, e.event_date AS eventDate,
+              o.recipient, o.subject, o.body
+       FROM guest_units g
+       JOIN events e ON e.id = g.event_id
+       JOIN email_outbox o ON o.guest_unit_id = g.id
+       WHERE g.invite_url IS NULL OR g.invite_url = ''
+       ORDER BY g.id, o.id`
+    ).all();
+    const update = this.db.prepare(
+      "UPDATE guest_units SET invite_url = ? WHERE id = ? AND (invite_url IS NULL OR invite_url = '')"
+    );
+    const candidatesByGuest = new Map();
+    for (const candidate of candidates) {
+      const entries = candidatesByGuest.get(candidate.id) || [];
+      entries.push(candidate);
+      candidatesByGuest.set(candidate.id, entries);
+    }
+    this.transaction(() => {
+      for (const [guestId, entries] of candidatesByGuest) {
+        if (entries.length !== 1) continue;
+        const inviteUrl = legacyInvitationUrl(entries[0]);
+        if (inviteUrl) update.run(inviteUrl, guestId);
+      }
+    });
   }
 
   close() { this.db.close(); }
@@ -548,12 +664,30 @@ class Store {
   }
 
   guestInviteLink(guestId, hostId) {
-    return this.db.prepare(
-      `SELECT g.revoked_at AS revokedAt, g.invite_url AS inviteUrl
+    const record = this.db.prepare(
+      `SELECT g.id, g.name, g.email, g.token_hash AS tokenHash,
+              g.revoked_at AS revokedAt, g.invite_url AS inviteUrl,
+              g.walk_in AS walkIn, e.title, e.event_date AS eventDate
        FROM guest_units g
        JOIN events e ON e.id = g.event_id
        WHERE g.id = ? AND e.host_id = ?`
     ).get(guestId, hostId);
+    if (!record || record.revokedAt || record.inviteUrl || record.walkIn) return record;
+    const inviteUrl = this.recoverLegacyInviteUrl(record);
+    if (!inviteUrl) return { ...record, inviteStatus: 'unrecoverable' };
+    this.db.prepare(
+      'UPDATE guest_units SET invite_url = ? WHERE id = ? AND (invite_url IS NULL OR invite_url = \'\')'
+    ).run(inviteUrl, guestId);
+    return { ...record, inviteUrl };
+  }
+
+  recoverLegacyInviteUrl(guest) {
+    const entries = this.db.prepare(
+      `SELECT recipient, subject, body FROM email_outbox
+       WHERE guest_unit_id = ? ORDER BY id`
+    ).all(guest.id);
+    if (entries.length !== 1) return null;
+    return legacyInvitationUrl({ ...guest, ...entries[0] });
   }
 
   emailExists(eventId, email) {
@@ -625,7 +759,7 @@ class Store {
   saveRsvp(guestId, answer, partySize, updatedAt, attendees = []) {
     return this.transaction(() => {
       const guest = this.db.prepare(
-        'SELECT id FROM guest_units WHERE id = ?'
+        'SELECT id, event_id AS eventId FROM guest_units WHERE id = ?'
       ).get(guestId);
       if (!guest) {
         const error = new Error('Guest not found.');
@@ -655,6 +789,10 @@ class Store {
           updatedAt
         );
       }
+      this.db.prepare(
+        `UPDATE seating_plans SET status = 'stale', updated_at = ?
+         WHERE event_id = ? AND status IN ('draft', 'saved', 'published')`
+      ).run(updatedAt, guest.eventId);
       return true;
     });
   }
@@ -664,6 +802,212 @@ class Store {
       `SELECT id, name, dietary, accessibility, age_band AS ageBand
        FROM rsvp_attendees WHERE guest_unit_id = ? ORDER BY id`
     ).all(guestId);
+  }
+
+  seatingAttendees(eventId, hostId) {
+    return this.db.prepare(
+      `SELECT a.id, a.guest_unit_id AS guestUnitId, a.name, a.dietary,
+              a.accessibility, a.age_band AS ageBand, g.name AS groupName
+       FROM rsvp_attendees a
+       JOIN guest_units g ON g.id = a.guest_unit_id
+       JOIN events e ON e.id = g.event_id
+       JOIN rsvps r ON r.guest_unit_id = g.id
+       WHERE g.event_id = ? AND e.host_id = ? AND r.answer = 'yes'
+         AND g.revoked_at IS NULL AND a.name <> ''
+       ORDER BY a.id`
+    ).all(eventId, hostId);
+  }
+
+  listSeatingPlans(eventId, hostId) {
+    return this.db.prepare(
+      `SELECT p.id, p.name, p.status, p.algorithm_version AS algorithmVersion,
+              p.seed, p.input_hash AS inputHash, p.score, p.created_at AS createdAt,
+              p.updated_at AS updatedAt, p.published_at AS publishedAt
+       FROM seating_plans p JOIN events e ON e.id = p.event_id
+       WHERE p.event_id = ? AND e.host_id = ? ORDER BY p.updated_at DESC, p.id DESC`
+    ).all(eventId, hostId).map((plan) => ({
+      ...plan, id: Number(plan.id), seed: Number(plan.seed), score: Number(plan.score)
+    }));
+  }
+
+  getSeatingPlan(planId, eventId, hostId) {
+    const plan = this.db.prepare(
+      `SELECT p.id, p.event_id AS eventId, p.name, p.status,
+              p.algorithm_version AS algorithmVersion, p.seed, p.input_hash AS inputHash,
+              p.score, p.payload_json AS payloadJson, p.created_at AS createdAt,
+              p.updated_at AS updatedAt, p.published_at AS publishedAt
+       FROM seating_plans p JOIN events e ON e.id = p.event_id
+       WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
+    ).get(planId, eventId, hostId);
+    if (!plan) return null;
+    let payload = {};
+    try { payload = JSON.parse(plan.payloadJson); } catch { payload = {}; }
+    const tables = this.db.prepare(
+      `SELECT id, name, capacity, shape, position_x AS positionX, position_y AS positionY,
+              sort_order AS sortOrder
+       FROM seating_tables WHERE plan_id = ? ORDER BY sort_order, id`
+    ).all(planId).map((table) => ({
+      ...table, id: Number(table.id), capacity: Number(table.capacity),
+      positionX: Number(table.positionX), positionY: Number(table.positionY),
+      sortOrder: Number(table.sortOrder)
+    }));
+    const assignments = this.db.prepare(
+      `SELECT attendee_id AS attendeeId, table_id AS tableId
+       FROM seating_assignments WHERE plan_id = ? ORDER BY attendee_id`
+    ).all(planId).map((assignment) => ({
+      attendeeId: Number(assignment.attendeeId), tableId: Number(assignment.tableId)
+    }));
+    return {
+      id: Number(plan.id), eventId: Number(plan.eventId), name: plan.name, status: plan.status,
+      algorithmVersion: plan.algorithmVersion, seed: Number(plan.seed), inputHash: plan.inputHash,
+      score: Number(plan.score), createdAt: plan.createdAt, updatedAt: plan.updatedAt,
+      publishedAt: plan.publishedAt, tables, assignments, payload, ...payload
+    };
+  }
+
+  createSeatingPlan(eventId, hostId, input, now) {
+    return this.transaction(() => {
+      const event = this.db.prepare('SELECT id FROM events WHERE id = ? AND host_id = ?')
+        .get(eventId, hostId);
+      if (!event) return null;
+      const inserted = this.db.prepare(
+        `INSERT INTO seating_plans
+         (event_id, name, algorithm_version, seed, input_hash, payload_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(eventId, input.name, input.algorithmVersion, input.seed, input.inputHash,
+        JSON.stringify({ constraints: input.constraints || [], violations: [], unassigned: [] }), now, now);
+      const planId = Number(inserted.lastInsertRowid);
+      const insertTable = this.db.prepare(
+        `INSERT INTO seating_tables
+         (plan_id, name, capacity, shape, position_x, position_y, initial_position_x, initial_position_y, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      input.tables.forEach((table, index) => insertTable.run(
+        planId, table.name, table.capacity, table.shape,
+        table.positionX, table.positionY, table.positionX, table.positionY, index
+      ));
+      return planId;
+    });
+  }
+
+  createSyntheticConfirmedGuests(eventId, hostId, entries, now) {
+    return this.transaction(() => {
+      const event = this.db.prepare('SELECT id FROM events WHERE id = ? AND host_id = ?')
+        .get(eventId, hostId);
+      if (!event) return null;
+      const insertGuest = this.db.prepare(
+        `INSERT INTO guest_units (event_id, name, email, party_limit, token_hash, invite_url, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      );
+      const insertOutbox = this.db.prepare(
+        `INSERT INTO email_outbox (guest_unit_id, recipient, subject, body, created_at)
+         VALUES (?, ?, ?, ?, ?)`
+      );
+      const insertRsvp = this.db.prepare(
+        `INSERT INTO rsvps (guest_unit_id, answer, party_size, updated_at) VALUES (?, 'yes', ?, ?)`
+      );
+      const insertAttendee = this.db.prepare(
+        `INSERT INTO rsvp_attendees (guest_unit_id, name, dietary, accessibility, age_band, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      );
+      const ids = entries.map((entry) => {
+        const inserted = insertGuest.run(
+          entry.eventId, entry.name, entry.email, entry.partyLimit,
+          entry.tokenHash, entry.inviteUrl, entry.createdAt
+        );
+        const id = Number(inserted.lastInsertRowid);
+        insertOutbox.run(id, entry.message.recipient, entry.message.subject, entry.message.body, entry.createdAt);
+        insertRsvp.run(id, entry.partyLimit, now);
+        entry.attendees.forEach((attendee) => insertAttendee.run(
+          id, attendee.name, attendee.dietary || '', attendee.accessibility || '',
+          attendee.ageBand === 'child' ? 'child' : 'adult', now
+        ));
+        return id;
+      });
+      return ids;
+    });
+  }
+
+  saveSeatingResult(planId, eventId, hostId, result, now, status = 'saved') {
+    return this.transaction(() => {
+      const owned = this.db.prepare(
+        `SELECT p.id FROM seating_plans p JOIN events e ON e.id = p.event_id
+         WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
+      ).get(planId, eventId, hostId);
+      if (!owned) return false;
+      this.db.prepare(
+        `UPDATE seating_plans SET status = ?, score = ?, input_hash = ?, payload_json = ?, updated_at = ?
+         WHERE id = ?`
+      ).run(status, result.score, result.inputHash, JSON.stringify(result.payload), now, planId);
+      this.db.prepare('DELETE FROM seating_assignments WHERE plan_id = ?').run(planId);
+      const insert = this.db.prepare(
+        'INSERT INTO seating_assignments (plan_id, attendee_id, table_id) VALUES (?, ?, ?)'
+      );
+      for (const assignment of result.assignments) {
+        insert.run(planId, assignment.attendeeId, assignment.tableId);
+      }
+
+      return true;
+    });
+  }
+
+  updateSeatingTablePositions(planId, eventId, hostId, positions, now) {
+    return this.transaction(() => {
+      const owned = this.db.prepare(
+        `SELECT p.id FROM seating_plans p JOIN events e ON e.id = p.event_id
+         WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
+      ).get(planId, eventId, hostId);
+      if (!owned) return false;
+      const update = this.db.prepare(
+        'UPDATE seating_tables SET position_x = ?, position_y = ? WHERE id = ? AND plan_id = ?'
+      );
+      positions.forEach((position) => update.run(position.positionX, position.positionY, position.tableId, planId));
+      this.db.prepare('UPDATE seating_plans SET updated_at = ? WHERE id = ?').run(now, planId);
+      return true;
+    });
+  }
+
+  resetSeatingTablePositions(planId, eventId, hostId, now) {
+    return this.transaction(() => {
+      const owned = this.db.prepare(
+        `SELECT p.id FROM seating_plans p JOIN events e ON e.id = p.event_id
+         WHERE p.id = ? AND p.event_id = ? AND e.host_id = ?`
+      ).get(planId, eventId, hostId);
+      if (!owned) return false;
+      const tables = this.db.prepare(
+        'SELECT id, sort_order AS sortOrder, initial_position_x AS initialX, initial_position_y AS initialY FROM seating_tables WHERE plan_id = ? ORDER BY sort_order, id'
+      ).all(planId);
+      const update = this.db.prepare(
+        'UPDATE seating_tables SET position_x = ?, position_y = ? WHERE id = ? AND plan_id = ?'
+      );
+      tables.forEach((table, index) => {
+        const fallbackX = 18 + (Number(table.sortOrder ?? index) % 4) * 21;
+        const fallbackY = 24 + (Math.floor(Number(table.sortOrder ?? index) / 4) % 3) * 28;
+        const initialX = Number(table.initialX);
+        const initialY = Number(table.initialY);
+        const current = this.db.prepare(
+          'SELECT position_x AS x, position_y AS y FROM seating_tables WHERE id = ? AND plan_id = ?'
+        ).get(table.id, planId);
+        const baselineWasCaptured = Number.isFinite(initialX) && Number.isFinite(initialY) &&
+          (initialX !== Number(current.x) || initialY !== Number(current.y));
+        update.run(
+          baselineWasCaptured ? initialX : fallbackX,
+          baselineWasCaptured ? initialY : fallbackY,
+          table.id,
+          planId
+        );
+      });
+      this.db.prepare('UPDATE seating_plans SET updated_at = ? WHERE id = ?').run(now, planId);
+      return true;
+    });
+  }
+
+  publishSeatingPlan(planId, eventId, hostId, now) {
+    return this.db.prepare(
+      `UPDATE seating_plans SET status = 'published', published_at = ?, updated_at = ?
+       WHERE id = ? AND event_id = ? AND EXISTS
+       (SELECT 1 FROM events WHERE id = ? AND host_id = ?)`
+    ).run(now, now, planId, eventId, eventId, hostId).changes;
   }
 
   checkInState(eventId, hostId) {

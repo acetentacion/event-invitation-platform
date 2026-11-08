@@ -32,6 +32,10 @@ class FakeElement {
     this.listeners.set(name, callback);
   }
 
+  removeEventListener(name, callback) {
+    if (this.listeners.get(name) === callback) this.listeners.delete(name);
+  }
+
   click() { this.listeners.get('click')?.(); }
 
   querySelector(selector) {
@@ -57,7 +61,8 @@ class FakeElement {
       '#guest-greeting', '#guest-title', '#guest-details', '#guest-date',
       '#guest-rsvp-title', '#guest-rsvp-helper',
       '#guest-location-row', '#guest-location', '#guest-deadline-row', '#guest-deadline',
-      '#guest-capacity', '.invitation-footnote', '.invitation-cover',
+      '#guest-capacity', '.invitation-footnote',
+      '#guest-invitation-image',
       '.reveal-envelope', '.guest-content', '.guest-audio-control',
       '.guest-chime-control', '.guest-audio-status'
     ]) clone.parts[selector] = new FakeElement();
@@ -126,16 +131,18 @@ class FakeElement {
       '.open-event', '.event-workspace', '.back-events', '.add', '.bulk-add', '.guest-actions', '.guest-toggle', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
-      '.theme-background', '.theme-text', '.theme-font', '.theme-image',
+      '.theme-background', '.theme-text', '.theme-font',
       '.invitation-preview', '.theme-status', '.save-theme',
-      '.remove-cover', '.contrast-warning', '.invitation-reveal-mode',
+      '.contrast-warning', '.invitation-reveal-mode',
       '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
       '.invitation-settings-status', '.invitation-settings-title', '.theme-editor',
-      '.invitation-settings', '.preview-reveal-toggle', '.invitation-copy-greeting',
+      '.invitation-settings', '.preview-reveal-toggle',
       '.invitation-copy-title', '.invitation-copy-intro', '.invitation-copy-rsvp-heading',
       '.invitation-copy-rsvp-helper', '.invitation-copy-footer', '.save-invitation-copy',
-      '.invitation-copy-status', '.invitation-copy-title-heading', '.invitation-copy-editor'
+      '.invitation-copy-status', '.invitation-copy-title-heading', '.invitation-copy-editor',
+      '.invitation-image-upload', '.invitation-image-shape', '.invitation-image-alt',
+      '.remove-invitation-image'
     ]) {
       this.parts[selector] = new FakeElement();
       if (selector.startsWith('.')) this.parts[selector].className = selector.slice(1);
@@ -266,7 +273,18 @@ test('event cards publish drafts and refresh to published state', async () => {
   assert.equal(card.parts['.preview-reveal-toggle'].hidden, true);
   assert.equal(card.parts['.invitation-reveal-mode'].value, 'direct');
   assert.equal(card.parts['.invitation-chime-enabled'].checked, false);
+  assert.equal(card.parts['.invitation-copy-greeting'], undefined, 'greeting is not an editable host field');
+  assert.equal(previewCard.parts['#guest-greeting'].textContent, 'An invitation for Alex Morgan');
   assert.equal(card.parts['.invitation-copy-title'].value, '');
+  assert.equal(card.parts['.invitation-copy-title'].placeholder, 'Sample gathering');
+  assert.equal(card.parts['.invitation-copy-intro'].value, '');
+  assert.equal(card.parts['.invitation-copy-intro'].placeholder, 'We’d be delighted if you can join us.');
+  assert.equal(card.parts['.invitation-copy-rsvp-heading'].value, '');
+  assert.equal(card.parts['.invitation-copy-rsvp-heading'].placeholder, 'Will you be there?');
+  assert.equal(card.parts['.invitation-copy-rsvp-helper'].value, '');
+  assert.equal(card.parts['.invitation-copy-rsvp-helper'].placeholder, 'Choose the response that works for you.');
+  assert.equal(card.parts['.invitation-copy-footer'].value, '');
+  assert.equal(card.parts['.invitation-copy-footer'].placeholder, 'Your reply is saved with this invitation. No email is sent from here.');
   assert.equal(card.parts['.publication-status'].textContent, 'Draft');
   const lifecycleStatus = card.parts['.event-status'].children[0];
   assert.equal(lifecycleStatus.textContent, 'Cancelled');
@@ -349,14 +367,18 @@ test('event cards publish drafts and refresh to published state', async () => {
   });
   card.parts['.invitation-copy-title'].value = '<A special evening>';
   card.parts['.invitation-copy-title'].listeners.get('input')();
+  assert.equal(card.parts['.invitation-copy-title'].value, '<A special evening>');
+  assert.equal(card.parts['.invitation-copy-title'].placeholder, '<A special evening>');
   assert.equal(previewCard.parts['#guest-title'].textContent, '<A special evening>');
-  card.parts['.invitation-copy-greeting'].value = 'Welcome';
-  card.parts['.invitation-copy-greeting'].listeners.get('input')();
-  assert.equal(previewCard.parts['#guest-greeting'].textContent, 'Welcome');
+  assert.equal(card.parts['.invitation-copy-intro'].value, '');
+  assert.equal(card.parts['.invitation-copy-intro'].placeholder, 'We’d be delighted if you can join us.');
+  assert.equal(previewCard.parts['#guest-greeting'].textContent, 'An invitation for Alex Morgan');
   await card.parts['.save-invitation-copy'].listeners.get('click')();
   const copyCall = calls.find((call) => call.url === '/api/events/7/invitation-copy');
   assert.equal(copyCall.options.method, 'PUT');
-  assert.equal(JSON.parse(copyCall.options.body).title, '<A special evening>');
+  const savedCopy = JSON.parse(copyCall.options.body);
+  assert.equal(savedCopy.title, '<A special evening>');
+  assert.equal(Object.hasOwn(savedCopy, 'greeting'), false);
 
   await card.parts['.publish'].listeners.get('click')();
 
@@ -475,7 +497,8 @@ test('event cards publish drafts and refresh to published state', async () => {
 
 test('guest invitation starts configured music on open and offers retry only when blocked', async () => {
   const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8');
-  async function loadGuest(revealMode, blocked = false) {
+  async function loadGuest(revealMode, blockedInitially = false) {
+    let blocked = blockedInitially;
     const elements = new Map();
     const getElement = (selector) => {
       if (!elements.has(selector)) elements.set(selector, new FakeElement());
@@ -556,7 +579,8 @@ test('guest invitation starts configured music on open and offers retry only whe
     return {
       getElement,
       get audioContexts() { return audioContexts; },
-      get oscillatorStarts() { return oscillatorStarts; }
+      get oscillatorStarts() { return oscillatorStarts; },
+      setBlocked(value) { blocked = value; }
     };
   }
 
@@ -565,21 +589,23 @@ test('guest invitation starts configured music on open and offers retry only whe
   assert.ok(guest.getElement('#guest').classList.contains('has-falling-leaves'));
   assert.equal(guest.getElement('#guest-envelope').hidden, false);
   assert.equal(guest.getElement('#guest-content').hidden, true);
-  assert.equal(guest.audioContexts, 0, 'envelope music waits for the guest open gesture');
+  assert.equal(guest.audioContexts, 1, 'envelope invitations attempt music as they load');
   await guest.getElement('#guest-envelope').listeners.get('click')();
   assert.equal(guest.getElement('#guest-envelope').hidden, true);
   assert.equal(guest.getElement('#guest-content').hidden, false);
   assert.equal(guest.getElement('#guest-title').focused, true);
-  assert.equal(guest.audioContexts, 1);
   assert.equal(guest.oscillatorStarts, 3, 'the opening gesture starts the music chord');
   assert.equal(guest.getElement('.guest-audio-control').hidden, true);
   assert.match(guest.getElement('#guest-audio-status').textContent, /background music is playing/i);
 
   const blockedGuest = await loadGuest('envelope', true);
+  blockedGuest.setBlocked(false);
+  blockedGuest.getElement('#guest').listeners.get('pointerdown')();
   await blockedGuest.getElement('#guest-envelope').listeners.get('click')();
-  assert.equal(blockedGuest.getElement('.guest-audio-control').hidden, false);
-  assert.equal(blockedGuest.getElement('#guest-chime').hidden, false);
-  assert.match(blockedGuest.getElement('#guest-audio-status').textContent, /could not start automatically/i);
+  assert.equal(blockedGuest.getElement('.guest-audio-control').hidden, true, 'first invitation interaction starts previously blocked music');
+  assert.equal(blockedGuest.audioContexts, 2, 'pointerdown and the following click share one retry');
+  assert.equal(blockedGuest.oscillatorStarts, 3);
+  assert.match(blockedGuest.getElement('#guest-audio-status').textContent, /background music is playing/i);
 
   const directGuest = await loadGuest('direct');
   assert.equal(directGuest.audioContexts, 1, 'direct invitations attempt music as they load');
@@ -588,7 +614,13 @@ test('guest invitation starts configured music on open and offers retry only whe
   const blockedDirectGuest = await loadGuest('direct', true);
   assert.equal(blockedDirectGuest.getElement('.guest-audio-control').hidden, false);
   assert.equal(blockedDirectGuest.getElement('#guest-chime').hidden, false);
-  assert.match(blockedDirectGuest.getElement('#guest-audio-status').textContent, /could not start automatically/i);
+  blockedDirectGuest.setBlocked(false);
+  blockedDirectGuest.getElement('#guest-chime').listeners.get('click')();
+  for (let attempt = 0; attempt < 20 && !blockedDirectGuest.getElement('.guest-audio-control').hidden; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.equal(blockedDirectGuest.getElement('.guest-audio-control').hidden, true, 'manual retry hides the control after starting music');
+  assert.equal(blockedDirectGuest.oscillatorStarts, 3, 'manual retry starts the music chord');
 });
 
 test('invalid or revoked guest links hide the RSVP form', async () => {
@@ -647,6 +679,7 @@ test('guest RSVP renders API details and persists selected answer and party size
           event: {
             title: 'A garden gathering', eventDate: '2035-06-15',
             location: 'Sample Park', rsvpDeadline: '2035-06-01T12:30:00.000Z',
+            invitationCopy: { greeting: 'Legacy custom greeting' },
             theme: {
               preset: 'garden', primaryColor: '#466b4d',
               backgroundColor: '#f4f6ed', textColor: '#26352a',

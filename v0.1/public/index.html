@@ -36,8 +36,8 @@
         <a class="workspace-brand" href="/" aria-label="Gatherly home"><span class="brand__mark" aria-hidden="true">g</span><span>gatherly</span></a>
         <p class="workspace-label">LOCAL WORKSPACE</p>
         <nav class="workspace-nav" aria-label="Host workspace">
-          <a class="workspace-link is-active" href="#events">▦ My events</a>
-          <button id="outbox-toggle" class="workspace-link" type="button">✉ Local email outbox</button>
+          <button class="workspace-link is-active" type="button" data-workspace-view="events" aria-current="page"><span aria-hidden="true">▦</span> My events</button>
+          <button id="outbox-toggle" class="workspace-link" type="button" data-workspace-view="outbox"><span aria-hidden="true">✉</span> Local email outbox</button>
         </nav>
         <label class="event-switcher" for="event-switch">Active event
           <select id="event-switch">
@@ -57,7 +57,7 @@
             <button id="logout" class="secondary">Sign out</button>
           </div>
         </div>
-        <section id="events" class="events-workspace" aria-label="Your events"></section>
+        <section id="events" class="events-workspace workspace-view" aria-label="Your events"></section>
         <section id="create-event" class="card create-event-card" aria-labelledby="create-event-title" hidden>
           <div class="create-event-card__heading">
             <div><p class="section-kicker">START WITH THE DETAILS</p><h2 id="create-event-title">Create an event</h2></div>
@@ -83,9 +83,9 @@
             <button>Create event</button>
           </form>
         </section>
-        <section id="outbox" class="card outbox-card" hidden>
+        <section id="outbox" class="card outbox-card workspace-view" aria-labelledby="outbox-title" hidden>
           <p class="section-kicker">LOCAL TEST MESSAGES</p>
-          <h2>Local email outbox</h2><p class="muted">Captured test messages only; no email is delivered.</p>
+          <h2 id="outbox-title">Local email outbox</h2><p class="muted">Captured test messages only; no email is delivered.</p>
           <div id="outbox-list"></div>
         </section>
       </div>
@@ -101,7 +101,7 @@
           <span class="reveal-envelope__hint">A little note is waiting inside</span>
         </button>
         <div class="guest-audio-control" hidden>
-          <button id="guest-chime" class="guest-chime-control secondary" type="button" hidden>Play gentle background music</button>
+          <button id="guest-chime" class="guest-chime-control secondary" type="button" hidden>Start background music</button>
           <p id="guest-audio-status" class="guest-audio-status help" role="status" aria-live="polite"></p>
         </div>
       </div>
@@ -115,10 +115,10 @@
         <svg class="invitation-botanical invitation-botanical--bottom" viewBox="0 0 220 190" aria-hidden="true">
           <path d="M17 169C82 137 113 85 143 15M62 132c-3-31 13-48 40-53-1 27-13 45-40 53Zm28-35c-1-30 16-47 44-50-2 28-17 45-44 50Zm25-42c2-24 18-37 41-39-4 23-19 36-41 39Zm-33 71c-25-15-47-10-64 12 23 14 45 12 64-12Z"/>
         </svg>
-        <img id="guest-cover" class="invitation-cover preview-image" alt="" hidden>
         <div class="invitation-copy">
           <p class="invitation-eyebrow"><span class="icon icon--star" aria-hidden="true"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 2l2.6 5.1 5.6.8-4.1 4 .9 5.5L12 15.9 7 17.4l.9-5.5-4.1-4 5.6-.8z" fill="currentColor"/></svg></span> YOU'RE INVITED</p>
           <p id="guest-greeting" class="invitation-overline"></p>
+          <img id="guest-invitation-image" class="invitation-image" alt="" hidden>
           <h1 id="guest-title" class="preview-title"></h1>
           <p id="guest-details" class="invitation-intro"></p>
           <div class="invitation-details" aria-label="Invitation details">

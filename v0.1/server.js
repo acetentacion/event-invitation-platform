@@ -21,8 +21,14 @@ const THEME_IMAGE_LIMIT = 1024 * 1024;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const RESERVED_EMAIL_DOMAIN_RE = /^(?:[a-z0-9-]+\.)*(?:test|example|invalid|localhost)$|^(?:[a-z0-9-]+\.)?example\.(?:com|net|org)$/i;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', '::1', 'localhost']);
-const CSP = "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+const CSP = "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 const DUMMY_PASSWORD_HASH = 'scrypt$00000000000000000000000000000000$' + '00'.repeat(64);
+const SYNTHETIC_NAMES = [
+  'Alex Morgan', 'Jordan Lee', 'Taylor Smith', 'Riley Chen', 'Casey Rivera',
+  'Avery Patel', 'Morgan Brooks', 'Jamie Nguyen', 'Cameron Davis', 'Quinn Wilson',
+  'Harper Kim', 'Drew Martin', 'Emerson Clark', 'Rowan Garcia', 'Sage Thompson',
+  'Parker Lewis', 'Reese Walker', 'Skyler Adams', 'Finley Moore', 'Blair Cooper'
+];
 const SUPPORTED_TIMEZONES = new Set(['UTC', ...(
   typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []
 )]);
@@ -92,8 +98,8 @@ function bodyJson(req, bodyLimit = BODY_LIMIT) {
   });
 }
 
-function invalid(message, status = 400) {
-  return Object.assign(new Error(message), { status });
+function invalid(message, status = 400, code) {
+  return Object.assign(new Error(message), { status, code });
 }
 
 function dateOnly(value) {
@@ -136,6 +142,173 @@ function zonedDateTimeToIso(value, timezone) {
 function validSyntheticEmail(email) {
   if (!EMAIL_RE.test(email) || email.length > 254) return false;
   return RESERVED_EMAIL_DOMAIN_RE.test(email.slice(email.lastIndexOf('@') + 1));
+}
+
+function validateSeatingTables(value) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 40) {
+    throw invalid('Add between 1 and 40 seating tables.');
+  }
+  const names = new Set();
+  return value.map((table, index) => {
+    const name = typeof table?.name === 'string' ? table.name.trim() : `Table ${index + 1}`;
+    const capacity = Number(table?.capacity);
+    const shape = ['round', 'rectangle', 'square', 'banquet'].includes(table?.shape)
+      ? table.shape : 'round';
+    const positionX = Number.isFinite(Number(table?.positionX))
+      ? Number(table.positionX) : 18 + (index % 4) * 21;
+    const positionY = Number.isFinite(Number(table?.positionY))
+      ? Number(table.positionY) : 24 + (Math.floor(index / 4) % 3) * 28;
+    if (!name || name.length > 100 || names.has(name.toLowerCase())) {
+      throw invalid('Table names must be unique and 1–100 characters.');
+    }
+    if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 100) {
+      throw invalid('Table capacity must be a whole number between 1 and 100.');
+    }
+    if (!Number.isFinite(positionX) || positionX < 5 || positionX > 95 ||
+        !Number.isFinite(positionY) || positionY < 8 || positionY > 92) {
+      throw invalid('Table positions must stay within the seating map.');
+    }
+    names.add(name.toLowerCase());
+    return { name, capacity, shape, positionX, positionY };
+  });
+}
+
+function validateSeatingConstraints(value) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 200) throw invalid('Seating constraints are invalid.');
+  return value.map((constraint) => {
+    if (!['together', 'apart'].includes(constraint?.type) ||
+        !Array.isArray(constraint.attendeeIds) || constraint.attendeeIds.length < 2 ||
+        constraint.attendeeIds.length > 20 ||
+        constraint.attendeeIds.some((id) => !Number.isSafeInteger(Number(id)) || Number(id) < 1)) {
+      throw invalid('Each seating constraint needs a type and at least two attendee IDs.');
+    }
+    return { type: constraint.type, attendeeIds: [...new Set(constraint.attendeeIds.map(Number))] };
+  });
+}
+
+function generateSeatingDraft(attendees, tables, constraints, seed = 1) {
+  const attendeeById = new Map(attendees.map((attendee) => [Number(attendee.id), attendee]));
+  const parent = new Map(attendees.map((attendee) => [Number(attendee.id), Number(attendee.id)]));
+  const find = (id) => {
+    let root = id;
+    while (parent.get(root) !== root) root = parent.get(root);
+    while (parent.get(id) !== id) {
+      const next = parent.get(id);
+      parent.set(id, root);
+      id = next;
+    }
+    return root;
+  };
+  const union = (first, second) => {
+    const left = find(first);
+    const right = find(second);
+    if (left !== right) parent.set(right, left);
+  };
+  const violations = [];
+  for (const constraint of constraints) {
+    const validIds = constraint.attendeeIds.filter((id) => attendeeById.has(id));
+    if (validIds.length !== constraint.attendeeIds.length) {
+      violations.push({ type: 'invalid', message: 'A constraint references an attendee who is not eligible.' });
+    }
+    if (constraint.type === 'together') {
+      for (let index = 1; index < validIds.length; index += 1) union(validIds[0], validIds[index]);
+    }
+  }
+  const maxTableCapacity = Math.max(...tables.map((table) => Number(table.capacity)), 0);
+  const householdMembers = new Map();
+  for (const attendee of attendees) {
+    const householdId = Number(attendee.guestUnitId);
+    if (!Number.isSafeInteger(householdId)) continue;
+    if (!householdMembers.has(householdId)) householdMembers.set(householdId, []);
+    householdMembers.get(householdId).push(Number(attendee.id));
+  }
+  for (const memberIds of householdMembers.values()) {
+    if (memberIds.length <= maxTableCapacity) {
+      for (let index = 1; index < memberIds.length; index += 1) {
+        union(memberIds[0], memberIds[index]);
+      }
+    }
+  }
+  const groups = new Map();
+  for (const attendee of attendees) {
+    const key = find(Number(attendee.id));
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(attendee);
+  }
+  const orderedGroups = [...groups.values()].sort((left, right) => {
+    const size = right.length - left.length;
+    return size || Number(left[0].id) - Number(right[0].id);
+  });
+  const assigned = new Map();
+  const remaining = new Map(tables.map((table) => [Number(table.id), Number(table.capacity)]));
+  for (const group of orderedGroups) {
+    const candidates = tables.filter((table) => (remaining.get(Number(table.id)) || 0) >= group.length);
+    if (!candidates.length) {
+      group.forEach((attendee) => violations.push({
+        type: 'capacity', attendeeId: Number(attendee.id),
+        message: `${attendee.name} could not be assigned within table capacity.`
+      }));
+      continue;
+    }
+    const table = candidates.sort((left, right) => {
+      const remainingDifference = remaining.get(Number(right.id)) - remaining.get(Number(left.id));
+      return remainingDifference || Number(left.id) - Number(right.id);
+    })[0];
+    const tableId = Number(table.id);
+    group.forEach((attendee) => assigned.set(Number(attendee.id), tableId));
+    remaining.set(tableId, remaining.get(tableId) - group.length);
+  }
+  for (const constraint of constraints.filter((item) => item.type === 'apart')) {
+    const tableIds = constraint.attendeeIds.map((id) => assigned.get(id)).filter(Boolean);
+    if (tableIds.length > 1 && new Set(tableIds).size !== tableIds.length) {
+      violations.push({
+        type: 'preference', attendeeIds: constraint.attendeeIds,
+        message: 'Some guests marked “keep apart” share a table.'
+      });
+    }
+  }
+  const assignments = [...assigned.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([attendeeId, tableId]) => ({ attendeeId, tableId }));
+  const unassigned = attendees.filter((attendee) => !assigned.has(Number(attendee.id)))
+    .map((attendee) => ({ attendeeId: Number(attendee.id), name: attendee.name }));
+  const householdGroups = [...new Map(
+    attendees
+      .filter((attendee) => Number.isSafeInteger(Number(attendee.guestUnitId)))
+      .map((attendee) => [Number(attendee.guestUnitId), attendees.filter(
+        (member) => Number(member.guestUnitId) === Number(attendee.guestUnitId)
+      )])
+  ).values()];
+  const familiesKeptTogether = householdGroups.filter((group) => {
+    const tableIds = new Set(group.map((attendee) => assigned.get(Number(attendee.id))).filter(Boolean));
+    return tableIds.size === 1 && group.every((attendee) => assigned.has(Number(attendee.id)));
+  }).length;
+  const familiesSplit = householdGroups.length - familiesKeptTogether;
+  const normalized = JSON.stringify({
+    attendees: attendees.map(({ id, name, guestUnitId }) => [Number(id), name, Number(guestUnitId)]),
+    tables: tables.map(({ id, capacity }) => [Number(id), Number(capacity)]),
+    constraints, seed
+  });
+  return {
+    assignments,
+    unassigned,
+    score: Math.max(0, 100 - violations.length * 10 - unassigned.length * 20 - familiesSplit * 15),
+    inputHash: sha256(normalized),
+    payload: {
+      constraints, violations, unassigned,
+      attendeeCount: attendees.length,
+      assignedCount: assignments.length,
+      remainingCapacity: [...remaining.values()].reduce((total, value) => total + value, 0),
+      optimization: {
+        householdGroups: householdGroups.length,
+        familiesKeptTogether,
+        familiesSplit,
+        familyOptimizationScore: householdGroups.length
+          ? Math.round((familiesKeptTogether / householdGroups.length) * 100) : 100
+      }
+    }
+  };
 }
 
 function validateEvent(input) {
@@ -214,11 +387,11 @@ function contrastRatio(firstColor, secondColor) {
 function validateTheme(input) {
   const keys = [
     'preset', 'primaryColor', 'backgroundColor',
-    'textColor', 'fontFamily', 'coverImage'
+    'textColor', 'fontFamily', 'fontSize', 'coverImage'
   ];
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      Object.keys(input).length !== keys.length ||
-      keys.some((key) => !Object.hasOwn(input, key))) {
+      !keys.filter((key) => key !== 'fontSize').every((key) => Object.hasOwn(input, key)) ||
+      Object.keys(input).some((key) => !keys.includes(key))) {
     throw invalid('Theme must contain exactly the required theme fields.');
   }
   if (!['classic', 'garden', 'midnight', 'custom'].includes(input.preset)) {
@@ -234,6 +407,9 @@ function validateTheme(input) {
   }
   if (!['serif', 'sans'].includes(input.fontFamily)) {
     throw invalid('Choose serif or sans for the theme font.');
+  }
+  if (input.fontSize !== undefined && !['small', 'medium', 'large'].includes(input.fontSize)) {
+    throw invalid('Choose small, medium, or large for the invitation font size.');
   }
 
   let coverImage = input.coverImage;
@@ -258,7 +434,7 @@ function validateTheme(input) {
     }
   }
 
-  return {
+  const theme = {
     preset: input.preset,
     primaryColor: input.primaryColor,
     backgroundColor: input.backgroundColor,
@@ -266,6 +442,8 @@ function validateTheme(input) {
     fontFamily: input.fontFamily,
     coverImage
   };
+  if (input.fontSize !== undefined) theme.fontSize = input.fontSize;
+  return theme;
 }
 
 function validateInvitationSettings(input) {
@@ -304,21 +482,55 @@ function validateInvitationCopy(input) {
     rsvpHelper: 200,
     footerNote: 300
   };
-  const keys = Object.keys(limits);
+  const imageKeys = ['image', 'imageShape', 'imageAlt'];
+  const legacyKeys = Object.keys(limits);
+  const editableKeys = legacyKeys.filter((key) => key !== 'greeting');
+  const keys = [...legacyKeys, ...imageKeys];
+  const inputKeys = Object.keys(input || {});
+  const isLegacy = inputKeys.length === legacyKeys.length && legacyKeys.every((key) => Object.hasOwn(input, key));
+  const isCurrent = inputKeys.length === keys.length && keys.every((key) => Object.hasOwn(input, key));
+  const isEditable = inputKeys.length === editableKeys.length && editableKeys.every((key) => Object.hasOwn(input, key));
+  const isEditableCurrent = inputKeys.length === editableKeys.length + imageKeys.length &&
+    [...editableKeys, ...imageKeys].every((key) => Object.hasOwn(input, key));
   if (!input || typeof input !== 'object' || Array.isArray(input) ||
-      Object.keys(input).length !== keys.length ||
-      keys.some((key) => !Object.hasOwn(input, key))) {
-    throw invalid('Invitation copy must contain exactly greeting, title, intro, rsvpHeading, rsvpHelper, and footerNote.');
+      (!isLegacy && !isCurrent && !isEditable && !isEditableCurrent)) {
+    throw invalid('Invitation copy must contain the existing copy fields and optional image, imageShape, and imageAlt fields.');
   }
   const copy = {};
   for (const key of keys) {
+    if (!Object.hasOwn(input, key)) {
+      copy[key] = DEFAULT_INVITATION_COPY[key];
+      continue;
+    }
+    if (!Object.hasOwn(limits, key)) continue;
     if (typeof input[key] !== 'string') throw invalid(`${key} must be text.`);
     copy[key] = input[key].trim();
     if (copy[key].length > limits[key]) {
       throw invalid(`${key} must be ${limits[key]} characters or fewer.`);
     }
   }
-  return copy;
+  const image = Object.hasOwn(input, 'image') ? input.image : null;
+  if (image !== null) {
+    if (typeof image !== 'string') throw invalid('Invitation image must be null or a PNG, JPEG, or WebP data URL.');
+    const match = /^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(image);
+    if (!match || match[1].length % 4 !== 0) {
+      throw invalid('Invitation image must be a well-formed PNG, JPEG, or WebP base64 data URL.');
+    }
+    const decoded = Buffer.from(match[1], 'base64');
+    if (!decoded.length || decoded.toString('base64') !== match[1]) {
+      throw invalid('Invitation image base64 data is malformed.');
+    }
+    if (decoded.length > THEME_IMAGE_LIMIT) throw invalid('Invitation image must be 1 MiB or smaller.');
+  }
+  const imageShape = Object.hasOwn(input, 'imageShape') ? input.imageShape : 'circle';
+  if (!['circle', 'rounded-square', 'square', 'arch'].includes(imageShape)) {
+    throw invalid('Choose circle, rounded-square, square, or arch for imageShape.');
+  }
+  const imageAlt = Object.hasOwn(input, 'imageAlt') ? input.imageAlt : '';
+  if (typeof imageAlt !== 'string' || imageAlt.trim().length > 200) {
+    throw invalid('imageAlt must be 200 characters or fewer.');
+  }
+  return { ...copy, image, imageShape, imageAlt: imageAlt.trim() };
 }
 
 function effectiveOpen(event, currentTime = Date.now()) {
@@ -713,7 +925,7 @@ function createApp(options = {}) {
         return json(res, 200, { messages: store.listOutbox(hostRecord.id) });
       }
 
-      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests(?:\/bulk)?|dashboard|responses|publish|status|messages|theme|invitation|invitation-copy|export|check-in(?:\/reverse|\/walk-in)?))?$/);
+      const eventMatch = pathname.match(/^\/api\/events\/(\d+)(?:\/(guests(?:\/bulk)?|dashboard|responses|publish|status|messages|theme|invitation|invitation-copy|export|seating(?:\/seed|\/plans(?:\/\d+(?:\/(?:run|assignments|positions|publish))?)?)?|check-in(?:\/reverse|\/walk-in)?))?$/);
       if (eventMatch) {
         const eventId = Number(eventMatch[1]);
         if (!Number.isSafeInteger(eventId) || eventId < 1) throw invalid('Event not found.', 404);
@@ -748,12 +960,154 @@ function createApp(options = {}) {
           return json(res, 200, { invitationSettings: updated.invitationSettings });
         }
         if (method === 'PUT' && action === 'invitation-copy') {
-          const copy = validateInvitationCopy(await bodyJson(req));
+          const input = await bodyJson(req, THEME_BODY_LIMIT);
+          const copy = validateInvitationCopy(input);
+          if (!Object.hasOwn(input, 'greeting')) {
+            copy.greeting = store.getEventForHost(eventId, hostRecord.id).invitationCopy.greeting;
+          }
           if (!store.updateEventInvitationCopy(eventId, hostRecord.id, copy)) {
             throw invalid('Event not found.', 404);
           }
           const updated = store.getEventForHost(eventId, hostRecord.id);
           return json(res, 200, { invitationCopy: updated.invitationCopy });
+        }
+        if (action === 'seating' || action.startsWith('seating/')) {
+          const planMatch = action.match(/^seating\/plans(?:\/(\d+)(?:\/(run|assignments|positions|publish))?)?$/);
+          const planId = planMatch && planMatch[1] ? Number(planMatch[1]) : null;
+          const planAction = planMatch ? planMatch[2] : null;
+          if (method === 'GET' && action === 'seating') {
+            return json(res, 200, {
+              attendees: store.seatingAttendees(eventId, hostRecord.id),
+              plans: store.listSeatingPlans(eventId, hostRecord.id)
+            });
+          }
+          if (method === 'POST' && action === 'seating/seed') {
+            const input = await bodyJson(req);
+            const count = Number(input.count ?? 12);
+            if (!Number.isSafeInteger(count) || count < 1 || count > SYNTHETIC_NAMES.length) {
+              throw invalid(`Choose between 1 and ${SYNTHETIC_NAMES.length} synthetic attendees.`);
+            }
+            const existing = new Set(store.seatingAttendees(eventId, hostRecord.id).map((attendee) => attendee.name));
+            const names = SYNTHETIC_NAMES.filter((name) => !existing.has(name)).slice(0, count);
+            if (names.length < count) throw invalid('There are not enough unused synthetic names for this event.', 409);
+            const createdAt = currentIso();
+            const entries = names.map((name, index) => {
+              const token = crypto.randomBytes(32).toString('base64url');
+              const inviteUrl = `/rsvp/${token}`;
+              const email = `synthetic-${Date.now()}-${index}@example.test`;
+              return {
+                eventId, name, email, partyLimit: 1, tokenHash: sha256(token), inviteUrl, createdAt,
+                attendees: [{ name, dietary: '', accessibility: '', ageBand: 'adult' }],
+                message: {
+                  recipient: email, subject: `Synthetic invitation: ${event.title}`,
+                  body: `Synthetic confirmed attendee for local testing: ${name}. No email was sent.`
+                }
+              };
+            });
+            store.createSyntheticConfirmedGuests(eventId, hostRecord.id, entries, createdAt);
+            return json(res, 201, { created: names.length, names });
+          }
+          if (method === 'POST' && action === 'seating/plans') {
+            const input = await bodyJson(req);
+            const name = typeof input.name === 'string' ? input.name.trim() : 'Draft seating plan';
+            if (!name || name.length > 100) throw invalid('Seating plan name must be 1–100 characters.');
+            const tables = validateSeatingTables(input.tables);
+            const constraints = validateSeatingConstraints(input.constraints);
+            const seed = Number.isSafeInteger(Number(input.seed)) ? Number(input.seed) : 1;
+            const attendees = store.seatingAttendees(eventId, hostRecord.id);
+            const createdId = store.createSeatingPlan(eventId, hostRecord.id, {
+              name, tables, constraints, seed, algorithmVersion: 'heuristic-1',
+              inputHash: sha256(JSON.stringify({ attendees, tables, constraints, seed }))
+            }, currentIso());
+            return json(res, 201, { plan: store.getSeatingPlan(createdId, eventId, hostRecord.id) });
+          }
+          if (!planId) throw invalid('Seating plan not found.', 404);
+          const plan = store.getSeatingPlan(planId, eventId, hostRecord.id);
+          if (!plan) throw invalid('Seating plan not found.', 404);
+          if (method === 'GET' && !planAction) return json(res, 200, { plan });
+          if (method === 'POST' && planAction === 'run') {
+            const input = await bodyJson(req);
+            const attendees = store.seatingAttendees(eventId, hostRecord.id);
+            const generated = generateSeatingDraft(attendees, plan.tables, plan.constraints || [], plan.seed);
+            const result = input.reset === true ? {
+              ...generated,
+              assignments: [],
+              score: 0,
+              payload: {
+                ...generated.payload,
+                assignedCount: 0,
+                unassigned: attendees.map((attendee) => ({
+                  attendeeId: Number(attendee.id), name: attendee.name
+                }))
+              }
+            } : generated;
+            if (!store.saveSeatingResult(planId, eventId, hostRecord.id, result, currentIso(), 'saved')) {
+              throw invalid('Seating plan could not be saved.', 409);
+            }
+            if (input.reset === true &&
+                !store.resetSeatingTablePositions(planId, eventId, hostRecord.id, currentIso())) {
+              throw invalid('Seating plan positions could not be reset.', 409);
+            }
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
+          if (method === 'PUT' && planAction === 'assignments') {
+            const input = await bodyJson(req);
+            if (!Array.isArray(input.assignments)) throw invalid('Assignments must be an array.');
+            const attendees = store.seatingAttendees(eventId, hostRecord.id);
+            const attendeeIds = new Set(attendees.map((attendee) => Number(attendee.id)));
+            const tableIds = new Set(plan.tables.map((table) => Number(table.id)));
+            const seen = new Set();
+            const counts = new Map();
+            const assignments = input.assignments.map((assignment) => {
+              const attendeeId = Number(assignment?.attendeeId);
+              const tableId = Number(assignment?.tableId);
+              if (!attendeeIds.has(attendeeId) || !tableIds.has(tableId) || seen.has(attendeeId)) {
+                throw invalid('Assignments must reference each eligible attendee once at most.');
+              }
+              seen.add(attendeeId);
+              counts.set(tableId, (counts.get(tableId) || 0) + 1);
+              return { attendeeId, tableId };
+            });
+            for (const table of plan.tables) {
+              if ((counts.get(Number(table.id)) || 0) > Number(table.capacity)) {
+                throw invalid(`${table.name} exceeds its capacity.`, 409);
+              }
+            }
+            const result = {
+              assignments, score: 100, inputHash: plan.inputHash,
+              payload: {
+                ...(plan.payload || {}), assignedCount: assignments.length,
+                unassigned: attendees.filter((attendee) => !seen.has(Number(attendee.id)))
+                  .map((attendee) => ({ attendeeId: Number(attendee.id), name: attendee.name }))
+              }
+            };
+            store.saveSeatingResult(planId, eventId, hostRecord.id, result, currentIso(), 'saved');
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
+          if (method === 'PUT' && planAction === 'positions') {
+            const input = await bodyJson(req);
+            if (!Array.isArray(input.positions)) throw invalid('Positions must be an array.');
+            const positions = input.positions.map((position) => ({
+              tableId: Number(position?.tableId),
+              positionX: Number(position?.positionX),
+              positionY: Number(position?.positionY)
+            }));
+            if (positions.some((position) => !Number.isSafeInteger(position.tableId) ||
+                !Number.isFinite(position.positionX) || position.positionX < 3 || position.positionX > 97 ||
+                !Number.isFinite(position.positionY) || position.positionY < 3 || position.positionY > 97)) {
+              throw invalid('Table positions must stay within the seating map.');
+            }
+            if (!store.updateSeatingTablePositions(planId, eventId, hostRecord.id, positions, currentIso())) {
+              throw invalid('Seating plan could not be updated.', 409);
+            }
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
+          if (method === 'POST' && planAction === 'publish') {
+            if (plan.status === 'stale') throw invalid('Refresh this stale seating plan before publishing.', 409);
+            const result = store.publishSeatingPlan(planId, eventId, hostRecord.id, currentIso());
+            if (!result) throw invalid('Seating plan could not be published.', 409);
+            return json(res, 200, { plan: store.getSeatingPlan(planId, eventId, hostRecord.id) });
+          }
         }
         if (method === 'GET' && (action === 'dashboard' || action === '')) {
           const guests = dashboardGuests(eventId, hostRecord.id);
@@ -984,8 +1338,13 @@ function createApp(options = {}) {
           ? store.guestInviteLink(guestId, hostRecord.id)
           : null;
         if (!record) throw invalid('Guest not found.', 404);
-        if (record.revokedAt) throw invalid('Invite link has been revoked.', 410);
-        if (!record.inviteUrl) throw invalid('Invite link is unavailable.', 404);
+        if (record.revokedAt) throw invalid('Invite link has been revoked.', 410, 'INVITE_REVOKED');
+        if (!record.inviteUrl) {
+          if (record.inviteStatus === 'unrecoverable') {
+            throw invalid('Legacy invite link could not be safely recovered from its captured invitation.', 422, 'LEGACY_INVITE_UNRECOVERABLE');
+          }
+          throw invalid('Invite link is unavailable.', 404, 'INVITE_LINK_MISSING');
+        }
         return json(res, 200, { inviteUrl: record.inviteUrl });
       }
 
@@ -1003,7 +1362,9 @@ function createApp(options = {}) {
       if (res.headersSent) return res.destroy();
       const status = Number.isInteger(error.status) ? error.status : 500;
       if (status >= 500) console.error('Request failed:', error);
-      return json(res, status, { error: status >= 500 ? 'Unexpected server error.' : error.message });
+      const payload = { error: status >= 500 ? 'Unexpected server error.' : error.message };
+      if (error.code) payload.code = error.code;
+      return json(res, status, payload);
     }
   }
 

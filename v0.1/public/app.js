@@ -6,6 +6,7 @@ const token = location.pathname.match(/^\/rsvp\/([^/]+)$/)?.[1];
 let eventsCache = [];
 let currentEventId = null;
 let currentSection = 'overview';
+let workspaceView = 'events';
 // Tracks which guest panels are open across card rebuilds (e.g. after publishing).
 let openGuestPanels = new Set();
 // Tracks which theme panels are open across card rebuilds (e.g. after publishing).
@@ -16,12 +17,134 @@ const THEME_PRESETS = {
   garden: { primaryColor: '#466b4d', backgroundColor: '#f4f6ed', textColor: '#26352a', fontFamily: 'serif' },
   midnight: { primaryColor: '#313a63', backgroundColor: '#f1f1f7', textColor: '#22243a', fontFamily: 'sans' }
 };
-const DEFAULT_THEME = { preset: 'classic', ...THEME_PRESETS.classic, coverImage: null };
+const DEFAULT_THEME = { preset: 'classic', ...THEME_PRESETS.classic, fontSize: 'medium', coverImage: null };
 const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_COVER_BYTES = 1024 * 1024;
 const COLOR_PATTERN = /^#[\da-f]{6}$/i;
 const IMAGE_DATA_PATTERN = /^data:image\/(?:png|jpeg|webp);base64,([a-z\d+/]+={0,2})$/i;
 const MIN_TEXT_CONTRAST = 4.5;
+const FLOOR_PLAN_STORAGE_KEY = 'gatherly-floor-plans';
+const MAX_FLOOR_PLAN_BYTES = 5 * 1024 * 1024;
+
+function loadFloorPlans() {
+  try {
+    const saved = window.localStorage.getItem(FLOOR_PLAN_STORAGE_KEY);
+    const parsed = saved ? JSON.parse(saved) : {};
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveFloorPlan(eventId, floorPlan) {
+  try {
+    const plans = loadFloorPlans();
+    plans[String(eventId)] = floorPlan;
+    window.localStorage.setItem(FLOOR_PLAN_STORAGE_KEY, JSON.stringify(plans));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function getFloorPlan(eventId) {
+  return loadFloorPlans()[String(eventId)] || null;
+}
+
+function arrangeTablePositions(tables) {
+  const positions = tables.map((table, index) => ({
+    x: Number.isFinite(Number(table.positionX)) ? Number(table.positionX) : 18 + (index % 4) * 21,
+    y: Number.isFinite(Number(table.positionY)) ? Number(table.positionY) : 24 + (Math.floor(index / 4) % 3) * 28
+  }));
+  const anchors = positions.map((position) => ({ x: position.x, y: position.y }));
+  const minimumDistance = 18;
+  for (let pass = 0; pass < 28; pass += 1) {
+    for (let firstIndex = 0; firstIndex < positions.length; firstIndex += 1) {
+      for (let secondIndex = firstIndex + 1; secondIndex < positions.length; secondIndex += 1) {
+        const first = positions[firstIndex];
+        const second = positions[secondIndex];
+        const dx = second.x - first.x;
+        const dy = second.y - first.y;
+        const distance = Math.sqrt((dx * dx) + (dy * dy)) || .01;
+        if (distance >= minimumDistance) continue;
+        const push = (minimumDistance - distance) / distance * .42;
+        const offsetX = dx * push;
+        const offsetY = dy * push;
+        first.x -= offsetX;
+        first.y -= offsetY;
+        second.x += offsetX;
+        second.y += offsetY;
+      }
+    }
+    positions.forEach((position, index) => {
+      position.x += (anchors[index].x - position.x) * .07;
+      position.y += (anchors[index].y - position.y) * .07;
+      position.x = Math.max(9, Math.min(91, position.x));
+      position.y = Math.max(11, Math.min(89, position.y));
+    });
+  }
+  return positions;
+}
+
+function detectFloorPlanCandidates(image) {
+  const canvas = document.createElement('canvas');
+  const scale = Math.min(1, 900 / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+  canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * scale));
+  canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * scale));
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  if (!context) throw new Error('Canvas analysis is unavailable.');
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+  const visited = new Uint8Array(canvas.width * canvas.height);
+  const candidates = [];
+  for (let y = 0; y < canvas.height; y += 2) {
+    for (let x = 0; x < canvas.width; x += 2) {
+      const start = y * canvas.width + x;
+      if (visited[start]) continue;
+      const pixel = start * 4;
+      const darkness = (pixels[pixel] + pixels[pixel + 1] + pixels[pixel + 2]) / 3;
+      if (darkness > 170) continue;
+      const queue = [[x, y]];
+      visited[start] = 1;
+      let minX = x, maxX = x, minY = y, maxY = y, count = 0;
+      while (queue.length) {
+        const [currentX, currentY] = queue.pop();
+        count += 1;
+        minX = Math.min(minX, currentX); maxX = Math.max(maxX, currentX);
+        minY = Math.min(minY, currentY); maxY = Math.max(maxY, currentY);
+        for (const [nextX, nextY] of [[currentX + 2, currentY], [currentX - 2, currentY], [currentX, currentY + 2], [currentX, currentY - 2]]) {
+          if (nextX < 0 || nextY < 0 || nextX >= canvas.width || nextY >= canvas.height) continue;
+          const nextIndex = nextY * canvas.width + nextX;
+          if (visited[nextIndex]) continue;
+          const nextPixel = nextIndex * 4;
+          const nextDarkness = (pixels[nextPixel] + pixels[nextPixel + 1] + pixels[nextPixel + 2]) / 3;
+          if (nextDarkness > 170) continue;
+          visited[nextIndex] = 1;
+          queue.push([nextX, nextY]);
+        }
+      }
+      const width = maxX - minX + 1;
+      const height = maxY - minY + 1;
+      const area = width * height;
+      if (count < 12 || area < 180 || area > canvas.width * canvas.height * .18 ||
+          width < 18 || height < 18 || width / height > 4 || height / width > 4) continue;
+      const ratio = Math.max(width / height, height / width);
+      const compactness = count / area;
+      const isTable = ratio <= 2.6 && compactness >= .08;
+      const confidence = Math.round(Math.max(35, Math.min(94,
+        (isTable ? 72 : 42) + (ratio <= 1.8 ? 12 : 0) + (compactness >= .18 ? 8 : 0))));
+      candidates.push({
+        positionX: Math.round(((minX + maxX) / 2 / canvas.width) * 100),
+        positionY: Math.round(((minY + maxY) / 2 / canvas.height) * 100),
+        shape: ratio > 1.45 ? 'rectangle' : 'round',
+        capacity: ratio > 2.2 ? 10 : ratio > 1.45 ? 8 : 6,
+        isTable,
+        confidence
+      });
+    }
+  }
+  return candidates.slice(0, 40);
+}
 
 function relativeLuminance(color) {
   const channels = color.slice(1).match(/.{2}/g).map((value) => parseInt(value, 16) / 255);
@@ -62,6 +185,7 @@ function normalizeTheme(theme = {}) {
       ? requestedTextColor : bestContrastForeground(backgroundColor),
     fontFamily: theme.fontFamily === 'sans' || theme.fontFamily === 'serif'
       ? theme.fontFamily : palette.fontFamily,
+    fontSize: ['small', 'medium', 'large'].includes(theme.fontSize) ? theme.fontSize : 'medium',
     coverImage: isSafeImageDataUrl(theme.coverImage)
       ? theme.coverImage : null
   };
@@ -77,19 +201,39 @@ function normalizeInvitationSettings(settings = {}) {
 }
 
 const DEFAULT_INVITATION_COPY = {
-  greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+  greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: '',
+  image: null, imageShape: 'circle', imageAlt: ''
 };
 
 function normalizeInvitationCopy(copy = {}) {
-  return Object.fromEntries(Object.keys(DEFAULT_INVITATION_COPY).map((key) => [
-    key, typeof copy[key] === 'string' ? copy[key] : DEFAULT_INVITATION_COPY[key]
-  ]));
+  return {
+    ...DEFAULT_INVITATION_COPY,
+    ...Object.fromEntries(Object.keys(DEFAULT_INVITATION_COPY).map((key) => [
+      key, typeof copy[key] === 'string' ? copy[key] : DEFAULT_INVITATION_COPY[key]
+    ])),
+    image: isSafeImageDataUrl(copy.image) ? copy.image : null,
+    imageShape: ['circle', 'rounded-square', 'square', 'arch'].includes(copy.imageShape)
+      ? copy.imageShape : 'circle'
+  };
+}
+
+function setInvitationImage(image, copy) {
+  if (!image) return;
+  const safeCopy = normalizeInvitationCopy(copy);
+  image.hidden = !safeCopy.image;
+  image.classList.remove('invitation-image--circle', 'invitation-image--rounded-square', 'invitation-image--square', 'invitation-image--arch');
+  image.classList.add(`invitation-image--${safeCopy.imageShape}`);
+  if (safeCopy.image) image.src = safeCopy.image;
+  else image.removeAttribute('src');
+  image.alt = safeCopy.imageAlt;
+  if (safeCopy.imageAlt) image.removeAttribute('aria-hidden');
+  else image.setAttribute('aria-hidden', 'true');
 }
 
 function invitationCopyText(copy, event, guestName = 'Alex Morgan') {
   const safeCopy = normalizeInvitationCopy(copy);
   return {
-    greeting: safeCopy.greeting || `An invitation for ${guestName}`,
+    greeting: `An invitation for ${guestName}`,
     title: safeCopy.title || event.title,
     intro: safeCopy.intro || 'We’d be delighted if you can join us.',
     rsvpHeading: safeCopy.rsvpHeading || 'Will you be there?',
@@ -141,19 +285,15 @@ function applyTheme(element, theme) {
   element.style.setProperty('--invite-text', safeTheme.textColor);
   element.style.setProperty('--invite-font', safeTheme.fontFamily === 'serif'
     ? 'Georgia, "Times New Roman", serif' : 'system-ui, -apple-system, "Segoe UI", sans-serif');
+  element.style.setProperty('--invite-font-size', {
+    small: '.9rem', medium: '1rem', large: '1.15rem'
+  }[safeTheme.fontSize] || '1rem');
   element.style.setProperty('--invite-action-text', bestContrastForeground(safeTheme.primaryColor));
   return safeTheme;
 }
 
-function setThemePreview(preview, image, theme) {
-  const safeTheme = applyTheme(preview, theme);
-  setInvitationCover(image, safeTheme);
-}
-
-function setInvitationCover(image, theme) {
-  image.hidden = !theme.coverImage;
-  if (theme.coverImage) image.src = theme.coverImage;
-  else image.removeAttribute('src');
+function setThemePreview(preview, theme) {
+  applyTheme(preview, theme);
 }
 
 function formatInvitationDate(value) {
@@ -223,6 +363,7 @@ function mountInvitationPreview(preview, event) {
     if (element) element.textContent = value;
   };
   const copy = invitationCopyText(event.invitationCopy, event);
+  setInvitationImage($('.invitation-image', invitation) || $('#guest-invitation-image', invitation), event.invitationCopy);
   setText('#guest-greeting', copy.greeting);
   setText('#guest-title', copy.title);
   setText('#guest-details', copy.intro);
@@ -258,7 +399,12 @@ async function api(url, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(result.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.code = result.code;
+    throw error;
+  }
   return result;
 }
 
@@ -285,6 +431,29 @@ function showToast(text) {
   toast.hidden = false;
   window.clearTimeout(toast.hideTimer);
   toast.hideTimer = window.setTimeout(() => { toast.hidden = true; }, 2800);
+}
+async function copyText(value) {
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(value);
+      return true;
+    } catch {
+      // Fall through when the browser blocks clipboard permission.
+    }
+  }
+  const field = document.createElement('textarea');
+  field.value = value;
+  field.setAttribute('readonly', '');
+  field.setAttribute('aria-hidden', 'true');
+  field.style.position = 'fixed';
+  field.style.opacity = '0';
+  document.body.append(field);
+  field.focus();
+  field.select();
+  const copied = typeof document.execCommand === 'function' && document.execCommand('copy');
+  field.remove();
+  if (!copied) throw new Error('Clipboard unavailable.');
+  return true;
 }
 
 async function start() {
@@ -318,22 +487,42 @@ $('#logout').addEventListener('click', async () => {
   location.reload();
 });
 
-$('#outbox-toggle').addEventListener('click', async () => {
-  const section = $('#outbox');
-  section.hidden = !section.hidden;
-  if (!section.hidden) {
-    try { await loadOutbox(); }
-    catch (error) { showMessage($('#global-message'), error.message, true); }
-  }
+function setWorkspaceView(view) {
+  workspaceView = view === 'outbox' ? 'outbox' : 'events';
+  const eventsSection = $('#events');
+  const outboxSection = $('#outbox');
+  if (eventsSection) eventsSection.hidden = workspaceView !== 'events';
+  if (outboxSection) outboxSection.hidden = workspaceView !== 'outbox';
+  const workspaceButtons = typeof document.querySelectorAll === 'function'
+    ? document.querySelectorAll('[data-workspace-view]') : [];
+  workspaceButtons.forEach((button) => {
+    const active = button.dataset.workspaceView === workspaceView;
+    button.classList.toggle('is-active', active);
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
+  });
+}
+
+const workspaceButtons = typeof document.querySelectorAll === 'function'
+  ? document.querySelectorAll('[data-workspace-view]') : [];
+workspaceButtons.forEach((button) => {
+  button.addEventListener('click', async () => {
+    setWorkspaceView(button.dataset.workspaceView);
+    if (workspaceView === 'outbox') {
+      try { await loadOutbox(); }
+      catch (error) { showMessage($('#global-message'), error.message, true); }
+    }
+  });
 });
 
 async function openOutbox() {
-  $('#outbox').hidden = false;
+  setWorkspaceView('outbox');
   try { await loadOutbox(); }
   catch (error) { showMessage($('#global-message'), error.message, true); }
 }
 
 function openCreateEventForm() {
+  setWorkspaceView('events');
   const section = $('#create-event');
   section.hidden = false;
   populateTimezoneSelect($('#event-form [name=timezone]'), null);
@@ -366,6 +555,7 @@ $('#event-form').addEventListener('submit', async (event) => {
     await api('/api/events', { method: 'POST', body: JSON.stringify(data) });
     form.reset();
     $('#create-event').hidden = true;
+    setWorkspaceView('events');
     await loadEvents();
   } catch (error) { showMessage($('#global-message'), error.message, true); }
 });
@@ -373,7 +563,7 @@ $('#event-form').addEventListener('submit', async (event) => {
 async function loadEvents() {
   const { events } = await api('/api/events');
   eventsCache = events;
-  const hashMatch = String(location.hash || '').match(/^#event-(\d+)(?:\/(overview|guests|event-day|messages|invitation|settings))?$/);
+  const hashMatch = String(location.hash || '').match(/^#event-(\d+)(?:\/(overview|guests|seating|event-day|messages|invitation|settings))?$/);
   if (hashMatch && events.some((event) => String(event.id) === hashMatch[1])) {
     currentEventId = Number(hashMatch[1]);
     currentSection = hashMatch[2] || 'overview';
@@ -402,7 +592,7 @@ async function loadEvents() {
     card.className = 'card event-card';
     if (event.status === 'cancelled') card.classList.add('event-card--cancelled');
     card.dataset.eventId = String(event.id);
-    card.innerHTML = `<div class="event-topbar"><p class="breadcrumb"><span class="event-breadcrumb-title"></span></p><span class="local-event-tag">LOCAL EVENT</span></div><div class="event-heading"><div class="event-heading__copy"><div class="event-status"><span class="publication-status" role="status"></span><span class="response-state"></span></div><h2></h2><p class="event-meta"></p></div><div class="event-actions"><button class="open-event">Open event</button><button class="publish">Publish event</button><button class="add secondary">Add guest unit</button><button class="guest-toggle secondary" aria-expanded="false">Show guests</button><button class="export secondary">Export CSV</button><button class="print secondary">Print list</button><button class="toggle secondary"></button><button class="refresh secondary">Refresh</button></div></div><div class="stats" aria-live="polite"></div><div class="event-workspace" hidden><div class="event-workspace__bar"><button type="button" class="back-events secondary">Back to events</button><nav class="event-section-nav" aria-label="Event workspace sections" role="tablist"><button type="button" role="tab" data-section="overview" aria-selected="true">Overview</button><button type="button" role="tab" data-section="guests" aria-selected="false">Guests</button><button type="button" role="tab" data-section="event-day" aria-selected="false">Event day</button><button type="button" role="tab" data-section="messages" aria-selected="false">Messages</button><button type="button" role="tab" data-section="invitation" aria-selected="false">Invitation</button><button type="button" role="tab" data-section="settings" aria-selected="false">Settings</button></nav></div></div><section class="check-in-panel notice" data-event-section="event-day"><div class="check-in-panel__heading"><div><p class="section-kicker">EVENT DAY</p><h3>Check-in</h3><p class="help">Search a guest unit, email, or named attendee.</p></div><form class="walk-in-form"><input name="name" maxlength="100" placeholder="Walk-in name" aria-label="Walk-in name" required><input name="attendeeName" maxlength="100" placeholder="Attendee name" aria-label="Walk-in attendee name"><button type="submit">Add walk-in</button></form></div><label class="check-in-search-label">Find arrival<input class="check-in-search" type="search" placeholder="Name, email, or attendee" autocomplete="off"></label><div class="check-in-results" aria-live="polite"></div><p class="check-in-message message" role="status" aria-live="polite"></p></section><section class="event-status-panel notice" data-event-section="settings"><form class="event-status-form"><div class="columns"><label>Event status<select name="status"><option value="active">Active</option><option value="postponed">Postponed</option><option value="cancelled">Cancelled</option></select></label><label>Organizer note (optional)<input name="note" maxlength="500"></label></div><button type="submit" class="secondary">Save event status</button><p class="event-status-message message" role="status" aria-live="polite"></p></form></section><section class="local-message-panel notice" data-event-section="messages"><form class="local-message-form"><strong>Local message preview</strong><p class="help">Capture a message for selected guests in the local outbox. No email is sent.</p><div class="columns"><label>Recipients<select name="filter"><option value="all">All guests</option><option value="pending">Pending / no reply</option><option value="yes">Attending / yes</option><option value="maybe">Maybe</option><option value="no">Declined</option></select></label><label>Subject (optional)<input name="subject" maxlength="200"></label></div><label>Message (optional)<textarea name="message" rows="4" maxlength="10000"></textarea></label><button type="submit" class="secondary">Capture local preview</button><p class="local-message-result message" role="status" aria-live="polite"></p></form></section><section class="publish-next-steps notice" role="status" aria-labelledby="__publish_next_steps_title" data-event-section="overview" hidden><h3 id="__publish_next_steps_title">Published locally — what next?</h3><p>Your event is ready in this local workspace. Create a guest unit to generate a private RSVP link. Its invitation is captured in the local outbox; no email is sent.</p><div class="row"><button type="button" class="next-steps-add">Create a guest unit</button><button type="button" class="secondary next-steps-outbox">Open local email outbox</button></div></section><section class="guest-panel" data-event-section="guests" aria-labelledby="__guest_list_title" hidden><div class="guest-panel__head"><div><p class="section-kicker">INVITATIONS</p><h3 id="__guest_list_title">Your guest list</h3><p class="muted">Guest units and replies stored in this local workspace only.</p></div><button type="button" class="guest-panel-toggle secondary" aria-expanded="false" aria-controls="__guest_panel">Hide guest list</button></div><div class="guest-form-slot"></div><div class="guest-table"></div></section><section class="print-view" hidden></section><div class="theme-editor" data-event-section="invitation">
+    card.innerHTML = `<div class="event-topbar"><p class="breadcrumb"><span class="event-breadcrumb-title"></span></p><span class="local-event-tag">LOCAL EVENT</span></div><div class="event-heading"><div class="event-heading__copy"><div class="event-status"><span class="publication-status" role="status"></span><span class="response-state"></span></div><h2></h2><p class="event-meta"></p></div><div class="event-actions"><button class="open-event">Open event</button><button class="publish">Publish event</button><button class="add secondary">Add guest unit</button><button class="guest-toggle secondary" aria-expanded="false">Show guests</button><button class="export secondary">Export CSV</button><button class="print secondary">Print list</button><button class="toggle secondary"></button><button class="refresh secondary">Refresh</button></div></div><div class="stats" aria-live="polite"></div><div class="event-workspace" hidden><div class="event-workspace__bar"><button type="button" class="back-events secondary">Back to events</button><nav class="event-section-nav" aria-label="Event workspace sections" role="tablist"><button type="button" role="tab" data-section="overview" aria-selected="true">Overview</button><button type="button" role="tab" data-section="guests" aria-selected="false">Guests</button><button type="button" role="tab" data-section="seating" aria-selected="false">Seating</button><button type="button" role="tab" data-section="event-day" aria-selected="false">Event day</button><button type="button" role="tab" data-section="messages" aria-selected="false">Messages</button><button type="button" role="tab" data-section="invitation" aria-selected="false">Invitation</button><button type="button" role="tab" data-section="settings" aria-selected="false">Settings</button></nav></div></div><section class="check-in-panel notice" data-event-section="event-day"><div class="check-in-panel__heading"><div><p class="section-kicker">EVENT DAY</p><h3>Check-in</h3><p class="help">Search a guest unit, email, or named attendee.</p></div><form class="walk-in-form"><input name="name" maxlength="100" placeholder="Walk-in name" aria-label="Walk-in name" required><input name="attendeeName" maxlength="100" placeholder="Attendee name" aria-label="Walk-in attendee name"><button type="submit">Add walk-in</button></form></div><label class="check-in-search-label">Find arrival<input class="check-in-search" type="search" placeholder="Name, email, or attendee" autocomplete="off"></label><div class="check-in-results" aria-live="polite"></div><p class="check-in-message message" role="status" aria-live="polite"></p></section><section class="event-status-panel notice" data-event-section="settings"><form class="event-status-form"><div class="columns"><label>Event status<select name="status"><option value="active">Active</option><option value="postponed">Postponed</option><option value="cancelled">Cancelled</option></select></label><label>Organizer note (optional)<input name="note" maxlength="500"></label></div><button type="submit" class="secondary">Save event status</button><p class="event-status-message message" role="status" aria-live="polite"></p></form></section><section class="local-message-panel notice" data-event-section="messages"><form class="local-message-form"><strong>Local message preview</strong><p class="help">Capture a message for selected guests in the local outbox. No email is sent.</p><div class="columns"><label>Recipients<select name="filter"><option value="all">All guests</option><option value="pending">Pending / no reply</option><option value="yes">Attending / yes</option><option value="maybe">Maybe</option><option value="no">Declined</option></select></label><label>Subject (optional)<input name="subject" maxlength="200"></label></div><label>Message (optional)<textarea name="message" rows="4" maxlength="10000"></textarea></label><button type="submit" class="secondary">Capture local preview</button><p class="local-message-result message" role="status" aria-live="polite"></p></form></section><section class="publish-next-steps notice" role="status" aria-labelledby="__publish_next_steps_title" data-event-section="overview" hidden><h3 id="__publish_next_steps_title">Published locally — what next?</h3><p>Your event is ready in this local workspace. Create a guest unit to generate a private RSVP link. Its invitation is captured in the local outbox; no email is sent.</p><div class="row"><button type="button" class="next-steps-add">Create a guest unit</button><button type="button" class="secondary next-steps-outbox">Open local email outbox</button></div></section><section class="guest-panel" data-event-section="guests" aria-labelledby="__guest_list_title" hidden><div class="guest-panel__head"><div><p class="section-kicker">INVITATIONS</p><h3 id="__guest_list_title">Your guest list</h3><p class="muted">Guest units and replies stored in this local workspace only.</p></div><button type="button" class="guest-panel-toggle secondary" aria-expanded="false" aria-controls="__guest_panel">Hide guest list</button></div><div class="guest-form-slot"></div><div class="guest-table"></div></section><section class="print-view" hidden></section><div class="theme-editor" data-event-section="invitation">
       <button type="button" class="secondary theme-toggle" aria-expanded="false">Customize invitation</button>
       <section class="theme-panel" hidden>
         <p class="help">Adjust how the invitation opens, its optional background music, colors, font, and cover. Preview changes before saving.</p>
@@ -448,9 +638,6 @@ async function loadEvents() {
             <p class="help">Leave a field blank to use Gatherly's event-aware default. Copy is rendered as text.</p>
           </div>
           <div class="columns invitation-copy-controls">
-            <label>Greeting / overline
-              <input class="invitation-copy-greeting" maxlength="120">
-            </label>
             <label>Title override (optional)
               <input class="invitation-copy-title" maxlength="100">
             </label>
@@ -466,7 +653,20 @@ async function loadEvents() {
             <label class="invitation-copy-wide">Footer note
               <textarea class="invitation-copy-footer" maxlength="300" rows="2"></textarea>
             </label>
+            <label>Invitation image (PNG, JPEG, or WebP; max 1 MiB)
+              <input class="invitation-image-upload" type="file" accept="image/png,image/jpeg,image/webp">
+            </label>
+            <label>Image shape
+              <select class="invitation-image-shape" aria-label="Invitation image shape">
+                <option value="circle">Circle</option><option value="rounded-square">Rounded square</option>
+                <option value="square">Square</option><option value="arch">Arch</option>
+              </select>
+            </label>
+            <label class="invitation-copy-wide">Image alt text (optional)
+              <input class="invitation-image-alt" maxlength="200" placeholder="Describe the image for guests who use a screen reader">
+            </label>
           </div>
+          <button type="button" class="secondary remove-invitation-image">Remove invitation image</button>
           <button type="button" class="save-invitation-copy">Save invitation copy</button>
           <p class="invitation-copy-status message" role="status" aria-live="polite"></p>
         </section>
@@ -485,12 +685,12 @@ async function loadEvents() {
               <option value="serif">Serif</option><option value="sans">Sans serif</option>
             </select>
           </label>
-          <label>Cover image (PNG, JPEG, or WebP; max 1 MiB)
-            <input class="theme-image" type="file" accept="image/png,image/jpeg,image/webp">
+          <label>Font size
+            <select class="theme-font-size" aria-label="Invitation font size">
+              <option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option>
+            </select>
           </label>
         </div>
-        <p class="help image-help">Images are stored with this event theme. Maximum file size: 1 MiB.</p>
-        <button type="button" class="secondary remove-cover">Remove cover image</button>
         <button type="button" class="secondary preview-reveal-toggle" aria-pressed="false" hidden>Preview opened invitation</button>
         <div class="invitation-preview" aria-label="Invitation preview"></div>
         <p class="help preview-disclosure">Draft preview only. Example guest details are illustrative; preview controls are intentionally inactive and never play sound or submit an RSVP.</p>
@@ -521,6 +721,12 @@ async function loadEvents() {
     editPanel.dataset.eventSection = 'settings';
     editPanel.hidden = true;
     editPanel.innerHTML = `<form class="event-edit-form"><label>Event name <input name="title" maxlength="100" required></label><div class="columns"><label>Event date <input name="eventDate" type="date" required></label><label>Start time <input name="eventStartTime" type="time"></label><label>End time (optional) <input name="eventEndTime" type="time"></label><label>Timezone <select name="timezone"></select></label><label>RSVP deadline <input name="rsvpDeadline" type="datetime-local"></label></div><label>Location (optional) <input name="location" maxlength="200"></label><label>Event capacity (optional) <input name="capacity" type="number" min="1" max="100000" inputmode="numeric"></label><div class="row"><button type="submit">Save event details</button><button type="button" class="secondary event-edit-cancel">Cancel</button></div><p class="event-edit-status message" role="status" aria-live="polite"></p></form>`;
+    const seatingPanel = document.createElement('section');
+    seatingPanel.className = 'seating-panel card';
+    seatingPanel.dataset.eventSection = 'seating';
+    seatingPanel.hidden = true;
+    seatingPanel.innerHTML = `<div class="seating-panel__heading"><div><p class="section-kicker">EXPERIMENTAL</p><h3>Seating draft</h3><p class="muted">Create a host-only draft from confirmed named attendees. This never changes RSVPs or check-in records.</p></div><div class="seating-panel__actions"><label class="floor-plan-file-label">Floor plan<input class="floor-plan-file" type="file" accept="image/png,image/jpeg,image/webp,application/pdf"></label><button type="button" class="secondary floor-plan-analyze" disabled>Analyze</button><button type="button" class="secondary floor-plan-clear" hidden>Remove plan</button><button type="button" class="secondary seating-refresh">Refresh</button></div></div><p class="floor-plan-status message" role="status" aria-live="polite"></p><div class="floor-plan-preview" hidden></div><div class="seating-seed-row"><button type="button" class="secondary seating-seed">Add synthetic confirmed attendees</button><label>Count<input class="seating-seed-count" type="number" min="1" max="20" value="12"></label></div><form class="seating-create-form"><div class="columns"><label>Plan name<input name="name" value="First seating draft" maxlength="100" required></label><label>Tables<input name="tables" type="number" min="1" max="40" value="6" required></label><label>Default seats per table<input name="capacity" type="number" min="1" max="100" value="8" required></label></div><p class="help seating-detection-note">Upload and analyze a floor plan to use its detected tables, shapes, seats, and positions automatically.</p><button type="submit">Create seating draft</button><p class="seating-message message" role="status" aria-live="polite"></p></form><div class="seating-plan-list"></div>`;
+    card.append(seatingPanel);
     card.append(editPanel);
     const editForm = $('.event-edit-form', editPanel);
     if (editForm) {
@@ -749,6 +955,7 @@ async function loadEvents() {
     if (guestToggle) guestToggle.addEventListener('click', toggleHandler);
     if (guestPanelToggle) guestPanelToggle.addEventListener('click', toggleHandler);
 
+    setupSeating(event, card);
     setupThemeEditor(event, card);
     container.append(card);
     syncEventCardAvailability(event, card);
@@ -792,6 +999,7 @@ function applyEventFilter() {
 }
 
 function switchEvent(eventId, selectedCard = null) {
+  setWorkspaceView('events');
   currentEventId = eventId === '' || eventId === null ? null : Number(eventId);
   currentSection = 'overview';
   const selected = currentEventId === null ? null : eventsCache.find((event) => event.id === currentEventId);
@@ -815,7 +1023,7 @@ function switchEvent(eventId, selectedCard = null) {
 
 function setEventSection(event, card, section) {
   currentSection = section;
-  const validSections = ['overview', 'guests', 'event-day', 'messages', 'invitation', 'settings'];
+  const validSections = ['overview', 'guests', 'seating', 'event-day', 'messages', 'invitation', 'settings'];
   if (!validSections.includes(section)) currentSection = 'overview';
   if (typeof history !== 'undefined') history.replaceState(null, '', `#event-${event.id}/${currentSection}`);
   syncEventWorkspace(event, card);
@@ -855,6 +1063,482 @@ $('#event-switch').addEventListener('change', (event) => {
   switchEvent(event.target.value);
 });
 
+function setupSeating(event, card) {
+  let seatingMapZoom = 1;
+  const panel = $('.seating-panel', card);
+  if (!panel) return;
+  const form = $('.seating-create-form', panel);
+  const list = $('.seating-plan-list', panel);
+  const message = $('.seating-message', panel);
+  if (!form || !list || !message) return;
+  const tableCountInput = form.elements.tables;
+  const floorPlanFile = $('.floor-plan-file', panel);
+  const floorPlanAnalyze = $('.floor-plan-analyze', panel);
+  const floorPlanClear = $('.floor-plan-clear', panel);
+  const floorPlanStatus = $('.floor-plan-status', panel);
+  const floorPlanPreview = $('.floor-plan-preview', panel);
+  let selectedFloorPlan = getFloorPlan(event.id);
+  const setFloorPlanStatus = (text, error = false) => {
+    floorPlanStatus.textContent = text;
+    floorPlanStatus.className = `floor-plan-status message${text ? (error ? ' error' : ' success') : ''}`;
+  };
+  const renderFloorPlanPreview = () => {
+    floorPlanPreview.replaceChildren();
+    if (!selectedFloorPlan) {
+      floorPlanPreview.hidden = true;
+      floorPlanClear.hidden = true;
+      floorPlanAnalyze.disabled = true;
+      return;
+    }
+    floorPlanPreview.hidden = false;
+    floorPlanClear.hidden = false;
+    floorPlanAnalyze.disabled = selectedFloorPlan.type === 'application/pdf';
+    if (selectedFloorPlan.type === 'application/pdf') {
+      const frame = document.createElement('iframe');
+      frame.title = 'Uploaded floor plan preview';
+      frame.src = selectedFloorPlan.dataUrl;
+      floorPlanPreview.append(frame);
+      setFloorPlanStatus('PDF preview loaded. Convert it to PNG or JPG to enable table analysis.');
+    } else {
+      const image = document.createElement('img');
+      image.alt = 'Uploaded event floor plan';
+      image.src = selectedFloorPlan.dataUrl;
+      floorPlanPreview.append(image);
+      setFloorPlanStatus('Floor plan loaded. Analyze it to find table candidates.');
+    }
+  };
+  renderFloorPlanPreview();
+  floorPlanFile.addEventListener('change', () => {
+    const file = floorPlanFile.files?.[0];
+    if (!file) return;
+    if (file.size > MAX_FLOOR_PLAN_BYTES) {
+      setFloorPlanStatus('Floor plan must be 5 MB or smaller.', true);
+      floorPlanFile.value = '';
+      return;
+    }
+    if (!IMAGE_TYPES.has(file.type) && file.type !== 'application/pdf') {
+      setFloorPlanStatus('Use a PNG, JPG, WebP, or PDF floor plan.', true);
+      floorPlanFile.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.addEventListener('load', () => {
+      selectedFloorPlan = { name: file.name, type: file.type, dataUrl: String(reader.result) };
+      if (!saveFloorPlan(event.id, selectedFloorPlan)) {
+        setFloorPlanStatus('The floor plan could not be saved in this browser.', true);
+        return;
+      }
+      renderFloorPlanPreview();
+      setFloorPlanStatus(file.type === 'application/pdf'
+        ? 'PDF preview loaded. Convert it to PNG or JPG to enable table analysis.'
+        : 'Floor plan loaded. Analyze it to find table candidates.');
+    });
+    reader.addEventListener('error', () => setFloorPlanStatus('The floor plan could not be read.', true));
+    reader.readAsDataURL(file);
+  });
+  floorPlanClear.addEventListener('click', () => {
+    selectedFloorPlan = null;
+    saveFloorPlan(event.id, null);
+    floorPlanFile.value = '';
+    renderFloorPlanPreview();
+    setFloorPlanStatus('Floor plan removed.');
+  });
+  floorPlanAnalyze.addEventListener('click', async () => {
+    if (!selectedFloorPlan || selectedFloorPlan.type === 'application/pdf') return;
+    floorPlanAnalyze.disabled = true;
+    setFloorPlanStatus('Analyzing floor plan…');
+    try {
+      const image = new Image();
+      image.src = selectedFloorPlan.dataUrl;
+      await new Promise((resolve, reject) => {
+        image.addEventListener('load', resolve);
+        image.addEventListener('error', reject);
+      });
+      const candidates = detectFloorPlanCandidates(image);
+      if (!candidates.length) {
+        setFloorPlanStatus('No distinct table candidates found. You can still create the plan manually.', true);
+        return;
+      }
+      const tables = candidates.filter((candidate) => candidate.isTable);
+      selectedFloorPlan.candidates = tables;
+      saveFloorPlan(event.id, selectedFloorPlan);
+      tableCountInput.value = String(tables.length);
+      if (!tables.length) {
+        setFloorPlanStatus('No table-like shapes were detected. You can still create the plan manually.', true);
+        return;
+      }
+      selectedFloorPlan.candidates = tables;
+      saveFloorPlan(event.id, selectedFloorPlan);
+      setFloorPlanStatus(`${tables.length} table${tables.length === 1 ? '' : 's'} detected and placed according to the floor plan.`);
+    } catch {
+      setFloorPlanStatus('The image could not be analyzed. Try a clearer PNG or JPG.', true);
+    } finally {
+      floorPlanAnalyze.disabled = false;
+    }
+  });
+  const showMessage = (text, error = false) => {
+    message.textContent = text;
+    message.className = `seating-message message${text ? (error ? ' error' : ' success') : ''}`;
+  };
+  const renderPlan = (plan, attendees) => {
+    list.replaceChildren();
+    const heading = document.createElement('div');
+    heading.className = 'seating-plan-heading';
+    const title = document.createElement('h4');
+    title.textContent = `${plan.name} · ${plan.status}`;
+    const summary = document.createElement('p');
+    summary.className = 'help';
+    const optimization = plan.payload?.optimization;
+    const optimizationSummary = optimization
+      ? ` · ${optimization.familiesKeptTogether}/${optimization.householdGroups} households together`
+      : '';
+    summary.textContent = `${plan.payload?.assignedCount || 0}/${attendees.length} assigned · ${plan.payload?.violations?.length || 0} issues${optimizationSummary}`;
+    const planActions = document.createElement('div');
+    planActions.className = 'seating-plan-actions';
+    const printPlan = () => {
+      card.classList.add('event-card--seating-printing');
+      const cleanup = () => card.classList.remove('event-card--seating-printing');
+      window.addEventListener?.('afterprint', cleanup, { once: true });
+      window.print();
+      setTimeout(cleanup, 1000);
+    };
+    [['Print plan', printPlan], ['Share plan', async () => {
+      try { await copyText(`${location.origin}${location.pathname}#event-${event.id}/seating`); showMessage('Seating plan link copied.'); }
+      catch (error) { showMessage(error.message, true); }
+    }]].forEach(([text, action]) => {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'secondary'; button.textContent = text;
+      button.addEventListener('click', action); planActions.append(button);
+    });
+    heading.append(title, summary, planActions);
+    list.append(heading);
+    const canvas = document.createElement('div');
+    canvas.className = 'seating-canvas';
+    canvas.setAttribute('role', 'group');
+    canvas.setAttribute('aria-label', 'Top view seating map');
+    let venuePlacementType = null;
+    const floorPlan = getFloorPlan(event.id);
+    const tablePositions = arrangeTablePositions(plan.tables || []);
+    const mapLayer = document.createElement('div');
+    mapLayer.className = 'seating-map-layer';
+    const addVenueItem = (type, positionX, positionY) => {
+      const item = document.createElement('span');
+      item.className = 'seating-venue-item';
+      item.textContent = type;
+      item.style.left = `${positionX}%`; item.style.top = `${positionY}%`;
+      item.draggable = true;
+      item.addEventListener('dragend', (event) => {
+        const bounds = canvas.getBoundingClientRect();
+        item.style.left = `${Math.max(3, Math.min(97, ((event.clientX - bounds.left) / bounds.width) * 100))}%`;
+        item.style.top = `${Math.max(3, Math.min(97, ((event.clientY - bounds.top) / bounds.height) * 100))}%`;
+      });
+      mapLayer.append(item);
+    };
+    const venueTools = document.createElement('div');
+    venueTools.className = 'seating-venue-tools';
+    const venueToolsLabel = document.createElement('strong');
+    venueToolsLabel.textContent = 'Venue items';
+    venueTools.append(venueToolsLabel);
+    ['Dance floor', 'Bar', 'DJ booth'].forEach((type) => {
+      const tool = document.createElement('button');
+      tool.type = 'button';
+      tool.className = 'secondary';
+      tool.textContent = type;
+      tool.addEventListener('click', () => {
+        venuePlacementType = type;
+        canvas.classList.add('is-placement-mode');
+        showMessage(`Click the map to place a ${type}.`);
+      });
+      venueTools.append(tool);
+    });
+    canvas.append(venueTools);
+    canvas.addEventListener('click', (clickEvent) => {
+      if (!venuePlacementType || clickEvent.target.closest('button, .seating-map-table, .seating-venue-item, .seating-guest-sidebar')) return;
+      const bounds = canvas.getBoundingClientRect();
+      const positionX = Math.max(3, Math.min(97, 50 + ((clickEvent.clientX - (bounds.left + bounds.width / 2)) / seatingMapZoom / bounds.width) * 100));
+      const positionY = Math.max(3, Math.min(97, 50 + ((clickEvent.clientY - (bounds.top + bounds.height / 2)) / seatingMapZoom / bounds.height) * 100));
+      addVenueItem(venuePlacementType, positionX, positionY);
+      venuePlacementType = null;
+      canvas.classList.remove('is-placement-mode');
+      showMessage('Venue item placed.');
+    });
+    const applyMapZoom = () => { mapLayer.style.transform = `scale(${seatingMapZoom})`; };
+    const zoomControls = document.createElement('div');
+    zoomControls.className = 'seating-zoom-controls';
+    [['−', -0.15, 'Zoom out'], ['Fit', 0, 'Fit floor plan'], ['+', 0.15, 'Zoom in']].forEach(([text, amount, label]) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = text;
+      button.setAttribute('aria-label', label);
+      button.addEventListener('click', () => {
+        seatingMapZoom = amount === 0 ? 1 : Math.max(.5, Math.min(2.5, seatingMapZoom + amount));
+        applyMapZoom();
+      });
+      zoomControls.append(button);
+    });
+    canvas.append(zoomControls);
+    if (floorPlan?.type?.startsWith('image/')) {
+      const floorImage = document.createElement('img');
+      floorImage.className = 'seating-floor-plan';
+      floorImage.src = floorPlan.dataUrl;
+      floorImage.alt = 'Uploaded floor plan behind seating map';
+      mapLayer.append(floorImage);
+    }
+    const canvasHint = document.createElement('p');
+    canvasHint.className = 'seating-canvas__hint';
+    canvasHint.textContent = 'Drag a guest chair to another table to move them.';
+    canvas.append(canvasHint);
+    const assigned = new Map((plan.assignments || []).map((item) => [Number(item.attendeeId), Number(item.tableId)]));
+    const unassigned = attendees.filter((attendee) => !assigned.has(Number(attendee.id)));
+    const persistAssignment = async (attendeeId, fromTableId, toTableId) => {
+      if (Number(fromTableId) === Number(toTableId)) return;
+      const next = (plan.assignments || []).map((assignment) =>
+        Number(assignment.attendeeId) === Number(attendeeId)
+          ? { ...assignment, tableId: Number(toTableId) } : assignment);
+      if (!next.some((assignment) => Number(assignment.attendeeId) === Number(attendeeId))) {
+        next.push({ attendeeId: Number(attendeeId), tableId: Number(toTableId) });
+      }
+      try {
+        const result = await api(`/api/events/${event.id}/seating/plans/${plan.id}/assignments`, {
+          method: 'PUT', body: JSON.stringify({ assignments: next })
+        });
+        renderPlan(result.plan, attendees);
+        showMessage('Guest moved to the new table.');
+      } catch (error) {
+        showMessage(error.message, true);
+      }
+    };
+    plan.tables.forEach((table, tableIndex) => {
+      const position = tablePositions[tableIndex];
+      const tableMap = document.createElement('article');
+      tableMap.className = `seating-map-table seating-map-table--${table.shape || 'round'}`;
+      tableMap.style.left = `${position.x}%`;
+      tableMap.style.top = `${position.y}%`;
+      tableMap.setAttribute('aria-label', `${table.name}, ${table.capacity} seats`);
+      tableMap.dataset.tableId = String(table.id);
+      tableMap.draggable = true;
+      tableMap.addEventListener('dragstart', (dragEvent) => {
+        dragEvent.dataTransfer?.setData('text/gatherly-table', String(table.id));
+      });
+      tableMap.addEventListener('dragend', async (dragEvent) => {
+        const bounds = canvas.getBoundingClientRect();
+        const positionX = Math.max(3, Math.min(97, ((dragEvent.clientX - bounds.left) / bounds.width) * 100));
+        const positionY = Math.max(3, Math.min(97, ((dragEvent.clientY - bounds.top) / bounds.height) * 100));
+        try {
+          const result = await api(`/api/events/${event.id}/seating/plans/${plan.id}/positions`, {
+            method: 'PUT',
+            body: JSON.stringify({ positions: [{ tableId: table.id, positionX, positionY }] })
+          });
+          renderPlan(result.plan, attendees);
+        } catch (error) { showMessage(error.message, true); }
+      });
+      tableMap.addEventListener('dragover', (dragEvent) => {
+        if (dragEvent.dataTransfer?.types.includes('text/gatherly-attendee')) {
+          dragEvent.preventDefault();
+          tableMap.classList.add('is-drop-target');
+        }
+      });
+      tableMap.addEventListener('dragleave', () => tableMap.classList.remove('is-drop-target'));
+      tableMap.addEventListener('drop', (dropEvent) => {
+        dropEvent.preventDefault();
+        tableMap.classList.remove('is-drop-target');
+        const payload = dropEvent.dataTransfer?.getData('text/gatherly-attendee');
+        if (!payload) return;
+        const [attendeeId, fromTableId] = payload.split(':');
+        persistAssignment(attendeeId, fromTableId, table.id);
+      });
+      const tableSurface = document.createElement('div');
+      tableSurface.className = 'seating-map-table__surface';
+      const tableLabel = document.createElement('strong');
+      tableLabel.textContent = table.name;
+      const tableCount = document.createElement('small');
+      const tableGuests = attendees.filter((attendee) => assigned.get(Number(attendee.id)) === Number(table.id));
+      tableCount.textContent = `${tableGuests.length}/${table.capacity}`;
+      tableSurface.append(tableLabel, tableCount);
+      tableMap.append(tableSurface);
+      for (let index = 0; index < table.capacity; index += 1) {
+        const seat = document.createElement('span');
+        const attendee = tableGuests[index];
+        seat.className = `seating-map-seat${attendee ? '' : ' seating-map-seat--empty'}`;
+        seat.style.setProperty('--seat-index', index);
+        seat.style.setProperty('--seat-count', Math.max(Number(table.capacity), 1));
+        seat.style.setProperty('--seat-angle', `${(index * 360) / Math.max(Number(table.capacity), 1)}deg`);
+        seat.textContent = attendee ? attendee.name : 'Empty';
+        seat.title = attendee ? `Drag ${attendee.name} to another table` : 'Empty chair';
+        if (attendee) {
+          seat.draggable = true;
+          seat.dataset.attendeeId = String(attendee.id);
+          seat.addEventListener('dragstart', (dragEvent) => {
+            dragEvent.dataTransfer?.setData('text/gatherly-attendee', `${attendee.id}:${table.id}`);
+            dragEvent.dataTransfer?.setData('text/plain', attendee.name);
+            seat.classList.add('is-dragging');
+          });
+          seat.addEventListener('dragend', () => seat.classList.remove('is-dragging'));
+        }
+        tableMap.append(seat);
+      }
+      mapLayer.append(tableMap);
+    });
+    canvas.append(mapLayer);
+    applyMapZoom();
+    const sidebar = document.createElement('aside');
+    sidebar.className = 'seating-guest-sidebar';
+    sidebar.innerHTML = `<strong>Guest placement</strong><span>${unassigned.length} unseated · ${plan.assignments?.length || 0} seated</span>`;
+    unassigned.forEach((attendee) => {
+      const guest = document.createElement('button');
+      guest.type = 'button';
+      guest.className = 'seating-unassigned-guest';
+      guest.textContent = attendee.name;
+      guest.draggable = true;
+      guest.addEventListener('dragstart', (dragEvent) => {
+        dragEvent.dataTransfer?.setData('text/gatherly-attendee', `${attendee.id}:`);
+      });
+      sidebar.append(guest);
+    });
+    canvas.append(sidebar);
+    list.append(canvas);
+    const grid = document.createElement('div');
+    grid.className = 'seating-table-grid';
+    for (const table of plan.tables) {
+      const box = document.createElement('article');
+      box.className = 'seating-table-card';
+      const tableTitle = document.createElement('h4');
+      tableTitle.textContent = `${table.name} · ${[...assigned.values()].filter((id) => id === Number(table.id)).length}/${table.capacity}`;
+      box.append(tableTitle);
+      attendees.filter((attendee) => assigned.get(Number(attendee.id)) === Number(table.id))
+        .forEach((attendee) => {
+          const row = document.createElement('label');
+          row.className = 'seating-attendee';
+          row.textContent = attendee.name;
+          const select = document.createElement('select');
+          select.setAttribute('aria-label', `Move ${attendee.name}`);
+          plan.tables.forEach((optionTable) => {
+            const option = new Option(optionTable.name, optionTable.id, false, Number(optionTable.id) === Number(table.id));
+            select.add(option);
+          });
+          select.addEventListener('change', async () => {
+            await persistAssignment(attendee.id, table.id, select.value);
+          });
+          row.append(select);
+          box.append(row);
+        });
+      grid.append(box);
+    }
+    const details = document.createElement('details');
+    details.className = 'seating-details';
+    const detailsSummary = document.createElement('summary');
+    detailsSummary.textContent = 'Detailed assignments';
+    details.append(detailsSummary, grid);
+    list.append(details);
+    const actions = document.createElement('div');
+    actions.className = 'row seating-plan-actions';
+    const rerun = document.createElement('button');
+    rerun.type = 'button';
+    rerun.textContent = 'Regenerate draft';
+    const resetDraft = document.createElement('button');
+    resetDraft.type = 'button';
+    resetDraft.className = 'secondary';
+    resetDraft.textContent = 'Reset draft';
+    const rerunDraft = async (button, messageText, reset = false) => {
+      button.disabled = true;
+      try {
+        const result = await api(`/api/events/${event.id}/seating/plans/${plan.id}/run`, {
+          method: 'POST', body: JSON.stringify({ reset })
+        });
+        if (reset) {
+          await load();
+        } else {
+          renderPlan(result.plan, attendees);
+        }
+        showMessage(messageText);
+      } catch (error) { showMessage(error.message, true); }
+      finally { button.disabled = false; }
+    };
+    rerun.addEventListener('click', () => rerunDraft(rerun, 'Draft regenerated.'));
+    resetDraft.addEventListener('click', () => rerunDraft(
+      resetDraft, 'Draft reset: guest placements cleared and table positions restored.', true
+    ));
+    const publish = document.createElement('button');
+    publish.type = 'button';
+    publish.className = 'secondary';
+    publish.textContent = 'Publish plan';
+    publish.disabled = plan.status === 'published';
+    publish.addEventListener('click', async () => {
+      try {
+        const result = await api(`/api/events/${event.id}/seating/plans/${plan.id}/publish`, { method: 'POST', body: '{}' });
+        renderPlan(result.plan, attendees);
+        showMessage('Seating plan published.');
+      } catch (error) { showMessage(error.message, true); }
+    });
+    actions.append(rerun, resetDraft, publish);
+    list.append(actions);
+    if (plan.payload?.unassigned?.length) {
+      const unassigned = document.createElement('p');
+      unassigned.className = 'notice';
+      unassigned.textContent = `Unassigned: ${plan.payload.unassigned.map((item) => item.name).join(', ')}`;
+      list.append(unassigned);
+    }
+  };
+  const load = async () => {
+    try {
+      const result = await api(`/api/events/${event.id}/seating`);
+      list.replaceChildren();
+      if (!result.attendees.length) {
+        showMessage('Add confirmed named attendees before creating a seating draft.', true);
+        return;
+      }
+      showMessage(`${result.attendees.length} confirmed named attendees ready.`);
+      const plan = result.plans[0];
+      if (plan) {
+        const detail = await api(`/api/events/${event.id}/seating/plans/${plan.id}`);
+        renderPlan(detail.plan, result.attendees);
+      }
+    } catch (error) { showMessage(error.message, true); }
+  };
+  form.addEventListener('submit', async (submitEvent) => {
+    submitEvent.preventDefault();
+    const tables = Number(form.elements.tables.value);
+    const capacity = Number(form.elements.capacity.value);
+    try {
+      const created = await api(`/api/events/${event.id}/seating/plans`, {
+        method: 'POST',
+        body: JSON.stringify({
+          name: form.elements.name.value,
+          tables: Array.from({ length: tables }, (_, index) => {
+            const candidate = selectedFloorPlan?.candidates?.[index];
+            return {
+              name: `Table ${index + 1}`,
+              shape: candidate?.shape || 'round',
+              capacity: candidate?.capacity || capacity,
+              positionX: candidate?.positionX || 18 + (index % 4) * 21,
+              positionY: candidate?.positionY || 24 + (Math.floor(index / 4) % 3) * 28
+            };
+          }),
+          constraints: []
+        })
+      });
+      const run = await api(`/api/events/${event.id}/seating/plans/${created.plan.id}/run`, { method: 'POST', body: '{}' });
+      const data = await api(`/api/events/${event.id}/seating`);
+      renderPlan(run.plan, data.attendees);
+      showMessage('Draft generated. Review it before publishing.');
+    } catch (error) { showMessage(error.message, true); }
+  });
+  const refresh = $('.seating-refresh', panel);
+  if (refresh) refresh.addEventListener('click', load);
+  $('.seating-seed', panel).addEventListener('click', async () => {
+    try {
+      const count = Number($('.seating-seed-count', panel).value);
+      const result = await api(`/api/events/${event.id}/seating/seed`, {
+        method: 'POST', body: JSON.stringify({ count })
+      });
+      showMessage(`Added ${result.created} synthetic confirmed attendees.`);
+      await load();
+    } catch (error) { showMessage(error.message, true); }
+  });
+  load();
+}
+
 function setupThemeEditor(event, card) {
   const toggle = $('.theme-toggle', card);
   const panel = $('.theme-panel', card);
@@ -863,7 +1547,7 @@ function setupThemeEditor(event, card) {
   const background = $('.theme-background', card);
   const text = $('.theme-text', card);
   const font = $('.theme-font', card);
-  const fileInput = $('.theme-image', card);
+  const fontSize = $('.theme-font-size', card);
   const preview = $('.invitation-preview', card);
   const contrastWarning = $('.contrast-warning', card);
   const status = $('.theme-status', card);
@@ -874,12 +1558,15 @@ function setupThemeEditor(event, card) {
   const chimeEnabled = $('.invitation-chime-enabled', card);
   const saveInvitation = $('.save-invitation-settings', card);
   const invitationStatus = $('.invitation-settings-status', card);
-  const copyGreeting = $('.invitation-copy-greeting', card);
   const copyTitle = $('.invitation-copy-title', card);
   const copyIntro = $('.invitation-copy-intro', card);
   const copyRsvpHeading = $('.invitation-copy-rsvp-heading', card);
   const copyRsvpHelper = $('.invitation-copy-rsvp-helper', card);
   const copyFooter = $('.invitation-copy-footer', card);
+  const imageUpload = $('.invitation-image-upload', card);
+  const imageShape = $('.invitation-image-shape', card);
+  const imageAlt = $('.invitation-image-alt', card);
+  const removeInvitationImage = $('.remove-invitation-image', card);
   const saveInvitationCopy = $('.save-invitation-copy', card);
   const invitationCopyStatus = $('.invitation-copy-status', card);
   const invitationSettingsTitle = $('.invitation-settings-title', card);
@@ -907,7 +1594,6 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
       panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     const invitation = mountInvitationPreview(preview, event);
-  const image = $('.invitation-cover', invitation);
   const syncInvitationFields = () => {
     revealMode.value = draftInvitationSettings.revealMode;
     revealMotion.value = draftInvitationSettings.revealMotion;
@@ -929,22 +1615,29 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
   };
   const syncInvitationCopyFields = () => {
     const values = invitationCopyText(draftInvitationCopy, event);
-    copyGreeting.value = draftInvitationCopy.greeting;
     copyTitle.value = draftInvitationCopy.title;
+    copyTitle.placeholder = values.title;
     copyIntro.value = draftInvitationCopy.intro;
+    copyIntro.placeholder = values.intro;
     copyRsvpHeading.value = draftInvitationCopy.rsvpHeading;
+    copyRsvpHeading.placeholder = values.rsvpHeading;
     copyRsvpHelper.value = draftInvitationCopy.rsvpHelper;
+    copyRsvpHelper.placeholder = values.rsvpHelper;
     copyFooter.value = draftInvitationCopy.footerNote;
-    const setText = (selector, value) => {
-      const element = $(selector, invitation);
+    copyFooter.placeholder = values.footerNote;
+    imageShape.value = draftInvitationCopy.imageShape;
+    imageAlt.value = draftInvitationCopy.imageAlt;
+    setInvitationImage($('.invitation-image', invitation) || $('#guest-invitation-image', invitation), draftInvitationCopy);
+    const setText = (selector, fallbackSelector, value) => {
+      const element = $(selector, invitation) || $(fallbackSelector, invitation);
       if (element) element.textContent = value;
     };
-    setText('#guest-greeting', values.greeting);
-    setText('#guest-title', values.title);
-    setText('#guest-details', values.intro);
-    setText('#guest-rsvp-title', values.rsvpHeading);
-    setText('#guest-rsvp-helper', values.rsvpHelper);
-    setText('.invitation-footnote', values.footerNote);
+    setText('.invitation-overline', '#guest-greeting', values.greeting);
+    setText('.preview-title', '#guest-title', values.title);
+    setText('.invitation-intro', '#guest-details', values.intro);
+    setText('.invitation-rsvp__heading h2', '#guest-rsvp-title', values.rsvpHeading);
+    setText('.invitation-rsvp__heading > p:last-child', '#guest-rsvp-helper', values.rsvpHelper);
+    setText('.invitation-footnote', '#guest-footnote', values.footerNote);
   };
   const syncFields = () => {
     preset.value = draftTheme.preset;
@@ -952,7 +1645,8 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     background.value = draftTheme.backgroundColor;
     text.value = draftTheme.textColor;
     font.value = draftTheme.fontFamily;
-    setThemePreview(invitation, image, draftTheme);
+    if (fontSize) fontSize.value = draftTheme.fontSize;
+    setThemePreview(invitation, draftTheme);
   };
   const setStatus = (message, isError = false) => {
     status.textContent = message;
@@ -970,7 +1664,7 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
   const markCustom = () => {
     draftTheme.preset = 'custom';
     preset.value = 'custom';
-    setThemePreview(invitation, image, draftTheme);
+    setThemePreview(invitation, draftTheme);
     validateContrast();
     setStatus('');
   };
@@ -1022,7 +1716,7 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     setInvitationStatus('');
   });
   const copyFields = [
-    [copyGreeting, 'greeting'], [copyTitle, 'title'], [copyIntro, 'intro'],
+    [copyTitle, 'title'], [copyIntro, 'intro'],
     [copyRsvpHeading, 'rsvpHeading'], [copyRsvpHelper, 'rsvpHelper'], [copyFooter, 'footerNote']
   ];
   for (const [control, key] of copyFields) {
@@ -1037,6 +1731,49 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
       setInvitationCopyStatus('');
     });
   }
+  imageShape.addEventListener('change', () => {
+    draftInvitationCopy.imageShape = imageShape.value;
+    syncInvitationCopyFields();
+    setInvitationCopyStatus('');
+  });
+  imageAlt.addEventListener('input', () => {
+    draftInvitationCopy.imageAlt = imageAlt.value;
+    syncInvitationCopyFields();
+    setInvitationCopyStatus('');
+  });
+  imageUpload.addEventListener('change', async () => {
+    const file = imageUpload.files && imageUpload.files[0];
+    if (!file) return;
+    if (!IMAGE_TYPES.has(file.type)) {
+      imageUpload.value = '';
+      setInvitationCopyStatus('Choose a PNG, JPEG, or WebP image.', true);
+      return;
+    }
+    if (file.size > MAX_COVER_BYTES) {
+      imageUpload.value = '';
+      setInvitationCopyStatus('Image must be 1 MiB or smaller.', true);
+      return;
+    }
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.addEventListener('load', () => resolve(reader.result));
+        reader.addEventListener('error', () => reject(new Error('Could not read the selected image.')));
+        reader.readAsDataURL(file);
+      });
+      if (!isSafeImageDataUrl(dataUrl)) throw new Error('The selected file did not produce a supported image.');
+      draftInvitationCopy.image = dataUrl;
+      syncInvitationCopyFields();
+      setInvitationCopyStatus('');
+    } catch (error) { setInvitationCopyStatus(error.message, true); }
+  });
+  removeInvitationImage.addEventListener('click', () => {
+    if (event.status === 'cancelled') return;
+    draftInvitationCopy.image = null;
+    imageUpload.value = '';
+    syncInvitationCopyFields();
+    setInvitationCopyStatus('Invitation image removed from this draft.');
+  });
   saveInvitationCopy.addEventListener('click', async () => {
     if (event.status === 'cancelled') return;
     saveInvitationCopy.disabled = true;
@@ -1044,8 +1781,18 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     setInvitationCopyStatus('');
     try {
       const copy = normalizeInvitationCopy(draftInvitationCopy);
+      const payload = {
+        title: copy.title,
+        intro: copy.intro,
+        rsvpHeading: copy.rsvpHeading,
+        rsvpHelper: copy.rsvpHelper,
+        footerNote: copy.footerNote,
+        image: copy.image,
+        imageShape: copy.imageShape,
+        imageAlt: copy.imageAlt
+      };
       const result = await api(`/api/events/${event.id}/invitation-copy`, {
-        method: 'PUT', body: JSON.stringify(copy)
+        method: 'PUT', body: JSON.stringify(payload)
       });
       event.invitationCopy = result.invitationCopy;
       draftInvitationCopy = normalizeInvitationCopy(result.invitationCopy);
@@ -1113,42 +1860,11 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
       markCustom();
     }
   });
-  fileInput.addEventListener('change', async () => {
-    const file = fileInput.files && fileInput.files[0];
-    if (!file) return;
-    if (!IMAGE_TYPES.has(file.type)) {
-      fileInput.value = '';
-      setStatus('Choose a PNG, JPEG, or WebP image.', true);
-      return;
+  fontSize?.addEventListener('change', () => {
+    if (['small', 'medium', 'large'].includes(fontSize.value)) {
+      draftTheme.fontSize = fontSize.value;
+      markCustom();
     }
-    if (file.size > MAX_COVER_BYTES) {
-      fileInput.value = '';
-      setStatus('Image must be 1 MiB or smaller.', true);
-      return;
-    }
-    try {
-      const dataUrl = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.addEventListener('load', () => resolve(reader.result));
-        reader.addEventListener('error', () => reject(new Error('Could not read the selected image.')));
-        reader.readAsDataURL(file);
-      });
-      if (!isSafeImageDataUrl(dataUrl)) {
-        throw new Error('The selected file did not produce a supported image.');
-      }
-      draftTheme.coverImage = dataUrl;
-      setThemePreview(invitation, image, draftTheme);
-      setStatus('');
-    } catch (error) {
-      setStatus(error.message, true);
-    }
-  });
-  $('.remove-cover', card).addEventListener('click', () => {
-    if (event.status === 'cancelled') return;
-    draftTheme.coverImage = null;
-    fileInput.value = '';
-    setThemePreview(invitation, image, draftTheme);
-    setStatus('Cover image removed from this draft.');
   });
   save.addEventListener('click', async () => {
     if (event.status === 'cancelled') return;
@@ -1159,13 +1875,14 @@ panel.id = `theme-panel-${String(event.id).replace(/[^a-z\d_-]/gi, '')}`;
     setStatus('');
     try {
       const theme = normalizeTheme(draftTheme);
+      if (!fontSize) delete theme.fontSize;
       await api(`/api/events/${event.id}/theme`, {
         method: 'PUT',
         body: JSON.stringify(theme)
       });
       event.theme = theme;
       draftTheme = { ...theme };
-      setThemePreview(invitation, image, draftTheme);
+      setThemePreview(invitation, draftTheme);
       setStatus('Theme saved.');
     } catch (error) {
       setStatus(error.message, true);
@@ -1196,7 +1913,8 @@ function syncEventCardAvailability(event, card) {
     '.export', '.print', '.refresh', '.theme-toggle', '.next-steps-add',
     '.guest-empty-state button',
     '.check-in-panel button', '.check-in-panel input',
-    '.save-theme', '.save-invitation-settings', '.remove-cover', '.preview-reveal-toggle',
+    '.save-theme', '.save-invitation-settings', '.save-invitation-copy',
+    '.remove-invitation-image', '.invitation-image-upload', '.invitation-image-shape', '.invitation-image-alt', '.preview-reveal-toggle',
     '.local-message-form button', '.toggle'
   ]) {
     const control = card.querySelector(selector);
@@ -1395,16 +2113,27 @@ async function renderDashboard(event, card) {
       linkButton.setAttribute('aria-label', `Copy invitation link for ${guest.name}`);
       linkButton.addEventListener('click', async () => {
         linkButton.disabled = true;
+        let inviteUrl;
         try {
-          const { inviteUrl } = await api(`/api/guests/${guest.id}/invite-link`);
-          const absoluteUrl = `${location.origin}${inviteUrl}`;
-          if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
-            throw new Error('Clipboard unavailable.');
+          ({ inviteUrl } = await api(`/api/guests/${guest.id}/invite-link`));
+        } catch (error) {
+          if (error.code === 'LEGACY_INVITE_UNRECOVERABLE') {
+            showToast(`${guest.name}'s invitation link could not be safely recovered from the local outbox.`);
+          } else if (error.code === 'INVITE_LINK_MISSING') {
+            showToast(`${guest.name}'s invitation link is unavailable in the local outbox.`);
+          } else if (error.code === 'INVITE_REVOKED' || error.status === 410) {
+            showToast(`${guest.name}'s invitation link has been revoked.`);
+          } else {
+            showToast(`Could not retrieve ${guest.name}'s invitation link. Try again.`);
           }
-          await navigator.clipboard.writeText(absoluteUrl);
+          linkButton.disabled = false;
+          return;
+        }
+        try {
+          await copyText(`${location.origin}${inviteUrl}`);
           showToast(`${guest.name}'s invitation link copied.`);
         } catch {
-          showToast(`Could not copy ${guest.name}'s link. Retrieve it from the local outbox.`);
+          showToast(`Could not copy ${guest.name}'s link. Check clipboard permissions and try again.`);
         } finally {
           linkButton.disabled = false;
         }
@@ -1470,8 +2199,7 @@ function createInviteLinkCollection(guests) {
     status.setAttribute('role', 'status');
     copy.addEventListener('click', async () => {
       try {
-        if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('Clipboard unavailable.');
-        await navigator.clipboard.writeText(link.href);
+        await copyText(link.href);
         status.textContent = 'Copied.';
       } catch {
         status.textContent = 'Select the link and copy it manually.';
@@ -1678,11 +2406,14 @@ async function showGuest(rsvpToken) {
     const data = await api(`/api/guest/${rsvpToken}`);
     const invitationSettings = normalizeInvitationSettings(data.event.invitationSettings);
     const guestTheme = applyTheme($('#guest'), normalizeTheme(data.event.theme || DEFAULT_THEME));
-    setInvitationCover($('#guest-cover'), guestTheme);
+    setInvitationImage($('#guest-invitation-image'), data.event.invitationCopy);
     syncInvitationPresentation($('#guest'), invitationSettings);
     let musicContext;
     let musicTimer;
     let musicStarting = false;
+    let musicAttempt = 0;
+    let musicInteractionRetryArmed = false;
+    let musicGestureRetryInProgress = false;
     const stopInvitationMusic = () => {
       if (musicTimer !== undefined) window.clearInterval(musicTimer);
       musicTimer = undefined;
@@ -1691,12 +2422,43 @@ async function showGuest(rsvpToken) {
       }
       musicContext = undefined;
     };
+    const removeMusicInteractionRetry = () => {
+      if (!musicInteractionRetryArmed || typeof $('#guest').removeEventListener !== 'function') return;
+      for (const eventName of ['pointerdown', 'keydown', 'click']) {
+        $('#guest').removeEventListener(eventName, retryFromInteraction);
+      }
+      musicInteractionRetryArmed = false;
+    };
+    const armMusicInteractionRetry = () => {
+      if (musicInteractionRetryArmed || typeof $('#guest').addEventListener !== 'function') return;
+      for (const eventName of ['pointerdown', 'keydown', 'click']) {
+        $('#guest').addEventListener(eventName, retryFromInteraction);
+      }
+      musicInteractionRetryArmed = true;
+    };
+    const retryFromInteraction = () => {
+      removeMusicInteractionRetry();
+      if (musicStarting) {
+        musicAttempt += 1;
+        stopInvitationMusic();
+      }
+      musicGestureRetryInProgress = true;
+      void startInvitationMusic(true);
+    };
     const startInvitationMusic = async (hasUserGesture = false) => {
-      if (!invitationSettings.chimeEnabled || musicStarting || musicContext) return;
+      if (!invitationSettings.chimeEnabled) return;
+      if (musicContext && musicContext.state === 'running') return;
+      if (musicStarting) {
+        if (!hasUserGesture) return;
+        if (musicGestureRetryInProgress) return;
+        musicAttempt += 1;
+        stopInvitationMusic();
+      }
       const audioControl = $('.guest-audio-control');
       const button = $('#guest-chime');
       const status = $('#guest-audio-status');
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      const attempt = ++musicAttempt;
       button.disabled = true;
       status.textContent = '';
       musicStarting = true;
@@ -1713,6 +2475,7 @@ async function showGuest(rsvpToken) {
           })
         ]);
         if (resumeTimer !== undefined) window.clearTimeout(resumeTimer);
+        if (attempt !== musicAttempt) return;
         if (resumed === false) throw new Error('Audio playback is blocked.');
         if (context.state && context.state !== 'running') throw new Error('Audio is blocked.');
         const chords = [
@@ -1741,18 +2504,27 @@ async function showGuest(rsvpToken) {
         musicTimer = window.setInterval(playChord, 3800);
         status.textContent = 'Background music is playing.';
         audioControl.hidden = true;
+        removeMusicInteractionRetry();
       } catch {
+        if (attempt !== musicAttempt) return;
         stopInvitationMusic();
-        status.textContent = 'Background music could not start automatically. Use the button below to try again.';
-        button.textContent = 'Play gentle background music';
+        status.textContent = 'Your browser blocked automatic playback. Tap or click inside the invitation, or use the button below to start the music.';
+        button.textContent = 'Start background music';
         button.hidden = false;
         button.disabled = false;
         audioControl.hidden = false;
+        armMusicInteractionRetry();
       } finally {
-        musicStarting = false;
+        if (attempt === musicAttempt) {
+          musicStarting = false;
+          musicGestureRetryInProgress = false;
+        }
       }
     };
-    $('#guest-chime').addEventListener('click', () => startInvitationMusic(true));
+    $('#guest-chime').addEventListener('click', () => {
+      removeMusicInteractionRetry();
+      void startInvitationMusic(true);
+    });
     if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       window.addEventListener('pagehide', stopInvitationMusic, { once: true });
     }
@@ -1777,7 +2549,8 @@ async function showGuest(rsvpToken) {
       }
       return musicAttempt;
     });
-    if (invitationSettings.revealMode !== 'envelope') void startInvitationMusic();
+    armMusicInteractionRetry();
+    void startInvitationMusic();
     const guestCopy = invitationCopyText(data.event.invitationCopy, data.event, data.guest.name);
     $('#guest-greeting').textContent = guestCopy.greeting;
     $('#guest-title').textContent = guestCopy.title;
@@ -1922,13 +2695,16 @@ async function showGuest(rsvpToken) {
       values.partySize = values.answer === 'no' ? 0 : Number(values.partySize);
       // Collect attendee details.
       const attendees = [];
-      const rows = form.querySelectorAll('.attendee-row');
-      for (const row of rows) {
-        const name = row.querySelector('input[name$="-name"]')?.value || '';
-        const dietary = row.querySelector('input[name$="-dietary"]')?.value || '';
-        const accessibility = row.querySelector('input[name$="-accessibility"]')?.value || '';
-        const ageBand = row.querySelector('select[name$="-ageBand"]')?.value || 'adult';
-        attendees.push({ name, dietary, accessibility, ageBand });
+      if (values.answer !== 'no') {
+        const rows = form.querySelectorAll('.attendee-row');
+        for (const row of rows) {
+          const name = row.querySelector('input[name$="-name"]')?.value.trim() || '';
+          if (!name) continue;
+          const dietary = row.querySelector('input[name$="-dietary"]')?.value || '';
+          const accessibility = row.querySelector('input[name$="-accessibility"]')?.value || '';
+          const ageBand = row.querySelector('select[name$="-ageBand"]')?.value || 'adult';
+          attendees.push({ name, dietary, accessibility, ageBand });
+        }
       }
       values.attendees = attendees;
       const submit = form.querySelector('button[type="submit"]');

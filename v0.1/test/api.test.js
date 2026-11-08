@@ -721,7 +721,8 @@ test('persists validated invitation copy for owners and guests', async (t) => {
   const cookie = await f.register();
   const event = await createEvent(f, cookie);
   const defaults = {
-    greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+    greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: '',
+    image: null, imageShape: 'circle', imageAlt: ''
   };
   assert.deepEqual(event.invitationCopy, defaults);
   const guestResponse = await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
@@ -734,7 +735,8 @@ test('persists validated invitation copy for owners and guests', async (t) => {
     intro: 'Join us for dinner.',
     rsvpHeading: 'Can you join us?',
     rsvpHelper: 'Please choose a response.',
-    footerNote: 'With love, the hosts.'
+    footerNote: 'With love, the hosts.',
+    image: 'data:image/png;base64,aGVsbG8=', imageShape: 'arch', imageAlt: 'A garden table'
   };
   const saved = await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', copy, cookie);
   assert.equal(saved.status, 200);
@@ -748,9 +750,20 @@ test('persists validated invitation copy for owners and guests', async (t) => {
   const guest = await (await f.request(`/api/guest/${token}`)).json();
   assert.deepEqual(guest.event.invitationCopy, normalized);
 
+  const automaticCopy = {
+    title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: '',
+    image: null, imageShape: 'circle', imageAlt: ''
+  };
+  const automaticSave = await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', automaticCopy, cookie);
+  assert.equal(automaticSave.status, 200);
+  assert.equal((await automaticSave.json()).invitationCopy.greeting, normalized.greeting);
+
   const invalid = [
     { ...normalized, greeting: 3 },
     { ...normalized, intro: 'x'.repeat(501) },
+    { ...normalized, image: 'data:text/html;base64,PGgxPk5vPC9oMT4=' },
+    { ...normalized, imageShape: 'triangle' },
+    { ...normalized, imageAlt: 'x'.repeat(201) },
     { ...normalized, extra: 'nope' },
     { greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '' }
   ];
@@ -764,6 +777,13 @@ test('persists validated invitation copy for owners and guests', async (t) => {
     (await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', normalized)).status,
     401
   );
+  const legacySave = await f.jsonRequest(`/api/events/${event.id}/invitation-copy`, 'PUT', {
+    greeting: 'Legacy-compatible', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+  }, cookie);
+  assert.equal(legacySave.status, 200);
+  assert.deepEqual((await legacySave.json()).invitationCopy, {
+    ...defaults, greeting: 'Legacy-compatible'
+  });
   const otherHostId = Number(f.store.createHost(
     'copy-other@example.test', 'unused-test-hash', '2026-01-01T12:00:00.000Z'
   ));
@@ -1025,4 +1045,69 @@ test('postponement stores a replacement schedule, keeps RSVPs open, and captures
   assert.match((await postponed.json()).updateMessage, /new schedule/i);
   const outbox = await (await f.request('/api/outbox', {}, cookie)).json();
   assert.ok(outbox.messages.some((message) => message.messageType === 'preview' && /postponed/i.test(message.body)));
+});
+
+test('creates deterministic seating drafts, supports manual edits, publishes, and marks plans stale after RSVP changes', async (t) => {
+  const f = await fixture(t);
+  const cookie = await f.register();
+  const event = await createEvent(f, cookie);
+  const guest = await (await f.jsonRequest(`/api/events/${event.id}/guests`, 'POST', {
+    name: 'Seating Household', email: 'seating@example.test', partyLimit: 3
+  }, cookie)).json();
+  const token = guest.inviteUrl.split('/').pop();
+  await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 3,
+    attendees: [{ name: 'Alex Morgan' }, { name: 'Sam Morgan' }, { name: 'Taylor Morgan' }]
+  });
+
+  const created = await f.jsonRequest(`/api/events/${event.id}/seating/plans`, 'POST', {
+    name: 'Dinner draft',
+    tables: [{ name: 'Table 1', capacity: 2 }, { name: 'Table 2', capacity: 2 }]
+  }, cookie);
+  assert.equal(created.status, 201);
+  const planId = (await created.json()).plan.id;
+  const firstRun = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {}, cookie);
+  assert.equal(firstRun.status, 200);
+  const firstPlan = (await firstRun.json()).plan;
+  const secondRun = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {}, cookie);
+  assert.deepEqual((await secondRun.json()).plan.assignments, firstPlan.assignments);
+  assert.equal(firstPlan.payload.assignedCount, 3);
+  assert.equal(firstPlan.payload.optimization.householdGroups, 1);
+  assert.equal(firstPlan.payload.optimization.familiesKeptTogether, 0);
+  assert.equal(firstPlan.payload.optimization.familiesSplit, 1);
+  assert.equal(firstPlan.payload.optimization.familyOptimizationScore, 0);
+
+  const moved = firstPlan.assignments.map((assignment, index) => ({
+    ...assignment, tableId: index === 0 ? 2 : assignment.tableId
+  }));
+  const edit = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/assignments`, 'PUT', {
+    assignments: moved
+  }, cookie);
+  assert.equal(edit.status, 200);
+  const movedTable = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/positions`, 'PUT', {
+    positions: [{ tableId: 1, positionX: 24, positionY: 68 }]
+  }, cookie);
+  assert.equal(movedTable.status, 200);
+  assert.equal((await movedTable.json()).plan.tables.find((table) => table.id === 1).positionX, 24);
+  const reset = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/run`, 'POST', {
+    reset: true
+  }, cookie);
+  assert.equal(reset.status, 200);
+  const resetPlan = (await reset.json()).plan;
+  assert.equal(resetPlan.tables.find((table) => table.id === 1).positionX, 18);
+  assert.equal(resetPlan.tables.find((table) => table.id === 2).positionX, 39);
+  assert.deepEqual(resetPlan.assignments, []);
+  assert.equal(resetPlan.payload.assignedCount, 0);
+  const published = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/publish`, 'POST', {}, cookie);
+  assert.equal(published.status, 200);
+  assert.equal((await published.json()).plan.status, 'published');
+
+  await f.jsonRequest(`/api/guest/${token}/rsvp`, 'PUT', {
+    answer: 'yes', partySize: 3,
+    attendees: [{ name: 'Alex Morgan' }, { name: 'Sam Morgan' }]
+  });
+  const stale = await (await f.request(`/api/events/${event.id}/seating/plans/${planId}`, {}, cookie)).json();
+  assert.equal(stale.plan.status, 'stale');
+  const blockedPublish = await f.jsonRequest(`/api/events/${event.id}/seating/plans/${planId}/publish`, 'POST', {}, cookie);
+  assert.equal(blockedPublish.status, 409);
 });

@@ -24,6 +24,12 @@ test('local UI carries the Gatherly brand and keeps its synthetic-data warning',
   assert.match(html, /All events/);
   assert.match(html, /id="outbox-toggle"[^>]*>[\s\S]*Local email outbox/);
   assert.match(html, /id="guest-event-status"/);
+  const eyebrowIndex = html.indexOf('class="invitation-eyebrow"');
+  const greetingIndex = html.indexOf('id="guest-greeting"');
+  const imageIndex = html.indexOf('id="guest-invitation-image"');
+  const titleIndex = html.indexOf('id="guest-title"');
+  assert.ok(eyebrowIndex < greetingIndex && greetingIndex < imageIndex && imageIndex < titleIndex);
+  assert.doesNotMatch(html, /class="theme-image"|class="remove-cover"|Cover image/);
   assert.match(app, /\/api\/events\/\$\{event\.id\}\/status/);
   assert.match(app, /\/api\/events\/\$\{event\.id\}\/messages/);
   assert.match(app, /Local message preview/);
@@ -68,6 +74,8 @@ test('local UI carries the Gatherly brand and keeps its synthetic-data warning',
 test('visual alignment retains visible focus, mobile layouts, and invitation theme contrast', () => {
   assert.match(css, /:focus-visible[\s\S]*outline:\s*3px solid/i);
   assert.match(css, /@media \(max-width:\s*440px\)/);
+  assert.match(css, /\.invitation-image\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(css, /@media \(max-width:\s*600px\)[\s\S]*\.invitation-image\s*\{[\s\S]*margin-top:\s*18px/);
   assert.match(css, /@media \(prefers-reduced-motion:\s*reduce\)/);
   assert.match(css, /\.guest-content\.reveal-motion-fade/);
   assert.match(css, /\.guest-content\.reveal-motion-slide-up/);

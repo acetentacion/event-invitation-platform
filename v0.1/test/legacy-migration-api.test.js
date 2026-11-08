@@ -24,6 +24,8 @@ test('legacy guest_units migration keeps API paths usable without inventing iden
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gatherly-legacy-api-'));
   const dbPath = path.join(directory, 'legacy.sqlite');
   const token = 'legacy-bearer-token-012345678901234567890123';
+  const unrecoverableToken = 'legacy-unrecoverable-token-012345678901234567';
+  const revokedToken = 'legacy-revoked-token-012345678901234567890123';
   const legacyDb = new DatabaseSync(dbPath);
   legacyDb.exec(`
     CREATE TABLE events (
@@ -49,6 +51,14 @@ test('legacy guest_units migration keeps API paths usable without inventing iden
       VALUES (1, 1, 'Legacy API event', '2035-04-05', 'household', '2026-01-01');
     INSERT INTO guest_units (id, event_id, name, party_limit, token_hash, created_at)
       VALUES (1, 1, 'Historical household', 4, '${sha256(token)}', '2026-01-02');
+    INSERT INTO guest_units (id, event_id, name, party_limit, token_hash, created_at)
+      VALUES (2, 1, 'Unrecoverable household', 2, '${sha256(unrecoverableToken)}', '2026-01-02');
+    INSERT INTO guest_units (id, event_id, name, party_limit, token_hash, revoked_at, created_at)
+      VALUES (3, 1, 'Revoked household', 2, '${sha256(revokedToken)}', '2026-01-03', '2026-01-02');
+    INSERT INTO email_outbox (guest_unit_id, recipient, subject, body, created_at)
+      VALUES (1, 'opaw@example.test', 'Your invitation: Legacy API event',
+        'Hello Historical household\n\nYou are invited to Legacy API event on 2035-04-05.\nRSVP using your private local link: /rsvp/${token}\n\nLocal email capture only. No email was sent.',
+        '2026-01-02');
   `);
   legacyDb.close();
 
@@ -82,7 +92,23 @@ test('legacy guest_units migration keeps API paths usable without inventing iden
   assert.equal(rsvp.status, 200);
 
   const link = await request(baseUrl, '/api/guests/1/invite-link', {}, cookie);
-  assert.equal(link.status, 404);
+  assert.equal(link.status, 200);
+  assert.deepEqual(await link.json(), { inviteUrl: `/rsvp/${token}` });
+  assert.equal(
+    app.store.db.prepare('SELECT invite_url FROM guest_units WHERE id = 1').get().invite_url,
+    `/rsvp/${token}`
+  );
+  const unrecoverable = await request(baseUrl, '/api/guests/2/invite-link', {}, cookie);
+  assert.equal(unrecoverable.status, 422);
+  assert.deepEqual(await unrecoverable.json(), {
+    error: 'Legacy invite link could not be safely recovered from its captured invitation.',
+    code: 'LEGACY_INVITE_UNRECOVERABLE'
+  });
+  const revoked = await request(baseUrl, '/api/guests/3/invite-link', {}, cookie);
+  assert.equal(revoked.status, 410);
+  assert.deepEqual(await revoked.json(), {
+    error: 'Invite link has been revoked.', code: 'INVITE_REVOKED'
+  });
   const csv = await request(baseUrl, '/api/events/1/export', {}, cookie);
   assert.equal(csv.status, 200);
   assert.match(await csv.text(), /"Historical household","","yes","2"/);

@@ -65,13 +65,12 @@ class FakeElement {
       '#guest-greeting', '#guest-title', '#guest-details', '#guest-date',
       '#guest-rsvp-title', '#guest-rsvp-helper',
       '#guest-location-row', '#guest-location', '#guest-deadline-row', '#guest-deadline',
-      '#guest-capacity', '.invitation-footnote', '.invitation-cover', '.preview-image',
+      '#guest-capacity', '.invitation-footnote',
+      '#guest-invitation-image',
       '.preview-title', '.invitation-paper', '.reveal-envelope', '.guest-content',
       '.guest-audio-control', '.guest-chime-control', '.guest-audio-status'
     ]) clone.parts[selector] = new FakeElement();
     clone.parts['.preview-title'] = clone.parts['#guest-title'];
-    clone.parts['.preview-image'] = clone.parts['.invitation-cover'];
-    clone.parts['.invitation-cover'].removeAttribute = function (name) { delete this.attributes[name]; };
     clone.parts.controls = [new FakeElementInput(), new FakeElement()];
     clone.querySelectorAll = FakeElement.prototype.querySelectorAll;
     return clone;
@@ -87,16 +86,17 @@ class FakeElement {
       '.add', '.toggle', '.refresh', '.export', '.print', '.guest-form-slot', '.guest-table', '.print-view',
       '.publish-next-steps', '.next-steps-add', '.next-steps-outbox',
       '.theme-toggle', '.theme-panel', '.theme-preset', '.theme-primary',
-      '.theme-background', '.theme-text', '.theme-font', '.theme-image',
+      '.theme-background', '.theme-text', '.theme-font',
       '.invitation-preview', '.theme-status', '.save-theme',
-      '.remove-cover', '.contrast-warning', '.preview-reveal-toggle', '.invitation-reveal-mode',
+      '.contrast-warning', '.preview-reveal-toggle', '.invitation-reveal-mode',
       '.invitation-reveal-motion', '.invitation-celebration',
       '.invitation-chime-enabled', '.save-invitation-settings',
       '.invitation-settings-status', '.invitation-settings-title',
-      '.invitation-settings', '.invitation-copy-greeting', '.invitation-copy-title',
+      '.invitation-settings', '.invitation-copy-title',
       '.invitation-copy-intro', '.invitation-copy-rsvp-heading', '.invitation-copy-rsvp-helper',
       '.invitation-copy-footer', '.save-invitation-copy', '.invitation-copy-status',
-      '.invitation-copy-title-heading', '.invitation-copy-editor'
+      '.invitation-copy-title-heading', '.invitation-copy-editor', '.invitation-image-upload',
+      '.invitation-image-shape', '.invitation-image-alt', '.remove-invitation-image'
     ]) this.parts[selector] = new FakeElement();
     this.parts['.theme-panel'].hidden = true;
   }
@@ -167,6 +167,9 @@ test('host theme editor previews preset changes and saves the full theme object'
     }] };
     else if (url === '/api/events/42/dashboard') data = { guests: [] };
     else if (url === '/api/events/42/theme' && options.method === 'PUT') data = { ok: true };
+    else if (url === '/api/events/42/invitation-copy' && options.method === 'PUT') {
+      data = { invitationCopy: JSON.parse(options.body) };
+    }
     else throw new Error(`Unexpected request: ${url}`);
     return { ok: true, json: async () => data };
   };
@@ -189,6 +192,7 @@ test('host theme editor previews preset changes and saves the full theme object'
   assert.notEqual(invitation.parts['#guest-date'].textContent, '2035-06-15');
   assert.equal(invitation.parts['#guest-location'].textContent, 'Sample Park');
   assert.equal(invitation.parts['#guest-location-row'].hidden, false);
+  assert.equal(invitation.parts['#guest-invitation-image'].hidden, true);
   assert.equal(invitation.parts['#guest-deadline-row'].hidden, false);
   assert.equal(invitation.parts['#guest-capacity'].textContent, 'You can include up to 1 person in your reply.');
   assert.equal(invitation.parts.controls[0].disabled, true, 'preview controls are non-interactive');
@@ -221,15 +225,19 @@ test('host theme editor previews preset changes and saves the full theme object'
   parts['.theme-primary'].listeners.get('input')();
   assert.equal(parts['.theme-preset'].value, 'custom');
   assert.equal(invitation.styleValues['--invite-primary'], '#fefefe');
-  parts['.theme-image'].files = [{ type: 'image/gif', size: 12 }];
-  await parts['.theme-image'].listeners.get('change')();
-  assert.match(parts['.theme-status'].textContent, /PNG, JPEG, or WebP/);
-  parts['.theme-image'].files = [{ type: 'image/png', size: 1024 * 1024 + 1 }];
-  await parts['.theme-image'].listeners.get('change')();
-  assert.match(parts['.theme-status'].textContent, /1 MiB or smaller/);
-  parts['.theme-image'].files = [{ type: 'image/png', size: 5 }];
-  await parts['.theme-image'].listeners.get('change')();
-  assert.equal(invitation.parts['.invitation-cover'].src, 'data:image/png;base64,aGVsbG8=');
+  parts['.invitation-image-upload'].files = [{ type: 'image/png', size: 5 }];
+  await parts['.invitation-image-upload'].listeners.get('change')();
+  assert.equal(invitation.parts['#guest-invitation-image'].hidden, false);
+  assert.equal(invitation.parts['#guest-invitation-image'].src, 'data:image/png;base64,aGVsbG8=');
+  parts['.invitation-image-shape'].value = 'arch';
+  parts['.invitation-image-shape'].listeners.get('change')();
+  assert.equal(invitation.parts['#guest-invitation-image'].classList.contains('invitation-image--arch'), true);
+  parts['.invitation-image-alt'].value = '<image alt>';
+  parts['.invitation-image-alt'].listeners.get('input')();
+  assert.equal(invitation.parts['#guest-invitation-image'].alt, '<image alt>');
+  await parts['.save-invitation-copy'].listeners.get('click')();
+  const copySave = calls.find((call) => call.url === '/api/events/42/invitation-copy');
+  assert.equal(JSON.parse(copySave.options.body).imageAlt, '<image alt>');
 
   await parts['.save-theme'].listeners.get('click')();
   const save = calls.find((call) => call.url === '/api/events/42/theme');
@@ -237,11 +245,9 @@ test('host theme editor previews preset changes and saves the full theme object'
   assert.equal(save.options.method, 'PUT');
   assert.deepEqual(JSON.parse(save.options.body), {
     preset: 'custom', primaryColor: '#fefefe', backgroundColor: '#ffffff',
-    textColor: '#000000', fontFamily: 'serif', coverImage: 'data:image/png;base64,aGVsbG8='
+    textColor: '#000000', fontFamily: 'serif', coverImage: null
   });
   assert.equal(parts['.theme-status'].textContent, 'Theme saved.');
-  parts['.remove-cover'].listeners.get('click')();
-  assert.equal(invitation.parts['.invitation-cover'].hidden, true);
 });
 
 test('guest invitation applies the API theme without interpreting theme values as HTML', async () => {
@@ -270,6 +276,10 @@ test('guest invitation applies the API theme without interpreting theme values a
             preset: 'midnight', primaryColor: '#313a63', backgroundColor: '#f1f1f7',
             textColor: '#777777', fontFamily: 'sans',
             coverImage: 'data:image/webp;base64,UklGRg=='
+          },
+          invitationCopy: {
+            greeting: '', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: '',
+            image: 'data:image/webp;base64,UklGRg==', imageShape: 'rounded-square', imageAlt: '<script>alt</script>'
           }
         },
         guest: { name: 'Sample guest', partyLimit: 2, partySize: 1 }
@@ -284,12 +294,14 @@ test('guest invitation applies the API theme without interpreting theme values a
   await waitFor(() => document.querySelector('#guest-title').textContent !== '');
 
   const guest = document.querySelector('#guest');
-  const cover = document.querySelector('#guest-cover');
+  const invitationImage = document.querySelector('#guest-invitation-image');
   assert.equal(guest.styleValues['--invite-primary'], '#313a63');
   assert.equal(guest.styleValues['--invite-background'], '#f1f1f7');
   assert.equal(guest.styleValues['--invite-text'], '#000000');
   assert.equal(guest.styleValues['--invite-font'], 'system-ui, -apple-system, "Segoe UI", sans-serif');
   assert.equal(document.querySelector('#guest-title').textContent, '<script>not markup</script>');
-  assert.equal(cover.hidden, false);
-  assert.equal(cover.src, 'data:image/webp;base64,UklGRg==');
+  assert.equal(invitationImage.hidden, false);
+  assert.equal(invitationImage.src, 'data:image/webp;base64,UklGRg==');
+  assert.equal(invitationImage.alt, '<script>alt</script>');
+  assert.equal(invitationImage.classList.contains('invitation-image--rounded-square'), true);
 });

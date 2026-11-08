@@ -224,9 +224,18 @@ test('persists invitation copy separately from presentation settings', () => {
     };
     assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, DEFAULT_INVITATION_COPY);
     assert.equal(store.updateEventInvitationCopy(eventId, hostId, copy), 1);
-    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, copy);
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, {
+      ...DEFAULT_INVITATION_COPY, ...copy
+    });
     assert.deepEqual(store.getGuestByToken('missing-copy-token'), undefined);
     assert.equal(store.updateEventInvitationCopy(eventId, hostId + 1, copy), 0);
+    store.db.prepare('UPDATE events SET invitation_copy_json = ? WHERE id = ?')
+      .run(JSON.stringify({
+        greeting: 'Legacy', title: '', intro: '', rsvpHeading: '', rsvpHelper: '', footerNote: ''
+      }), eventId);
+    assert.deepEqual(store.getEventForHost(eventId, hostId).invitationCopy, {
+      ...DEFAULT_INVITATION_COPY, greeting: 'Legacy'
+    });
   } finally {
     store.close();
   }
